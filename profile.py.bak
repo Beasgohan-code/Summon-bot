@@ -1,0 +1,370 @@
+import io
+import sqlite3
+import math
+import random
+import requests
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ContextTypes, CommandHandler
+from telegram.constants import ParseMode
+
+DB = "summon.db"
+
+# ==================== MODERN VIBRANT PALETTE ====================
+PURPLE       = (167, 139, 250, 255)
+PURPLE_DEEP  = (124, 58, 237, 255)
+PINK         = (244, 114, 182, 255)
+PINK_DEEP    = (219, 39, 119, 255)
+BLUE         = (96, 165, 250, 255)
+CYAN         = (34, 211, 238, 255)
+GOLD         = (250, 204, 21, 255)
+GREEN        = (74, 222, 128, 255)
+ORANGE       = (251, 146, 60, 255)
+WHITE        = (255, 255, 255, 255)
+DIM          = (180, 170, 200, 255)
+MUTE         = (130, 120, 155, 255)
+CARD_BG      = (22, 16, 32, 245)
+BG_DARK      = (8, 6, 12, 255)
+
+
+def progress_bar(pct, length=10):
+    pct = max(0, min(100, pct))
+    filled = int(length * pct / 100)
+    return "▰" * filled + "▱" * (length - filled)
+
+
+def get_conn():
+    return sqlite3.connect(DB)
+
+
+def lerp(c1, c2, t):
+    return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(4))
+
+
+def draw_glow_rect(img, xy, color, radius=18, glow_size=8, border_width=3):
+    """Glowing rounded border around a box."""
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    for i in range(glow_size, 0, -1):
+        alpha = int(90 * (1 - i / glow_size))
+        expand = (glow_size - i) * 2
+        od.rounded_rectangle(
+            [xy[0] - expand, xy[1] - expand, xy[2] + expand, xy[3] + expand],
+            radius=radius + expand,
+            outline=(*color[:3], alpha),
+            width=2,
+        )
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=3))
+    img.alpha_composite(overlay)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle(xy, radius=radius, outline=color, width=border_width)
+
+
+async def profile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    target_id = user_id
+    target_first = user.first_name or "User"
+    target_username = user.username
+
+    if context.args:
+        arg = context.args[0].lstrip("@")
+        if arg.isdigit():
+            target_id = int(arg)
+        else:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT user_id, first_name, username FROM users WHERE username = ?",
+                (arg,),
+            ).fetchone()
+            conn.close()
+            if row:
+                target_id, target_first, target_username = row
+
+    conn = get_conn()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    u = cur.execute("SELECT * FROM users WHERE user_id = ?", (target_id,)).fetchone()
+    if not u:
+        await update.message.reply_text("❌ User not found.")
+        conn.close()
+        return
+
+    balance = u["balance"] or 0
+    first_name = u["first_name"] or target_first
+    username = u["username"] or target_username
+    last_daily = u["last_daily"]
+
+    chars = cur.execute(
+        """
+        SELECT COUNT(DISTINCT character_id) as cnt, SUM(count) as total
+        FROM user_collection WHERE user_id = ?
+        """,
+        (target_id,),
+    ).fetchone()
+    unique_chars = chars["cnt"] or 0
+    total_summons = chars["total"] or 0
+    total_game = cur.execute("SELECT COUNT(*) FROM characters").fetchone()[0] or 1
+    harem_pct = (unique_chars / total_game * 100) if total_game else 0
+
+    rank_row = cur.execute(
+        """
+        SELECT COUNT(*) + 1 FROM (
+            SELECT user_id, COUNT(DISTINCT character_id) as cnt
+            FROM user_collection GROUP BY user_id HAVING cnt > ?
+        )
+        """,
+        (unique_chars,),
+    ).fetchone()
+    rank = rank_row[0] if rank_row else 1
+
+    streak = 0
+    s = cur.execute("SELECT streak_count FROM user_streaks WHERE user_id = ?", (target_id,)).fetchone()
+    if s:
+        streak = s["streak_count"] or 0
+
+    purchases = cur.execute(
+        "SELECT COUNT(*) FROM market_transactions WHERE user_id = ?", (target_id,)
+    ).fetchone()[0] or 0
+
+    unlocked_ach = 0
+    try:
+        unlocked_ach = cur.execute(
+            "SELECT COUNT(*) FROM user_achievements WHERE user_id = ?", (target_id,)
+        ).fetchone()[0] or 0
+    except Exception:
+        pass
+
+    inv_count = 0
+    try:
+        inv_count = cur.execute(
+            "SELECT SUM(count) FROM user_inventory WHERE user_id = ?", (target_id,)
+        ).fetchone()[0] or 0
+    except Exception:
+        pass
+
+    fav_char = None
+    try:
+        fav_id = u["favorite"]
+        if fav_id:
+            fav_char = cur.execute("SELECT * FROM characters WHERE id = ?", (fav_id,)).fetchone()
+    except Exception:
+        pass
+
+    conn.close()
+
+    # ==================== BUILD CARD ====================
+    W, H = 1000, 540
+    base = Image.new("RGBA", (W, H), BG_DARK)
+
+    # Background gradient (top → bottom)
+    bg_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(bg_overlay)
+    for y in range(H):
+        t = y / H
+        c = lerp((20, 12, 35, 255), (8, 6, 18, 255), t)
+        bd.line([(0, y), (W, y)], fill=c)
+    base = Image.alpha_composite(base, bg_overlay)
+
+    # Load favorite character image (or fallback to Telegram avatar)
+    fav_img_loaded = None
+    if fav_char:
+        for url in (
+            fav_char[6] if len(fav_char) > 6 else None,
+            fav_char[7] if len(fav_char) > 7 else None,
+        ):
+            if url and isinstance(url, str) and url.startswith(("http://", "https://")):
+                try:
+                    r = requests.get(url, timeout=5)
+                    fav_img_loaded = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                    break
+                except Exception:
+                    continue
+
+    if not fav_img_loaded:
+        try:
+            user_photos = await user.get_profile_photos(limit=1)
+            if user_photos.total_count > 0:
+                file_id = user_photos.photos[0][-1].file_id
+                tg_file = await context.bot.get_file(file_id)
+                file_bytes = await tg_file.download_as_bytearray()
+                fav_img_loaded = Image.open(io.BytesIO(file_bytes)).convert("RGBA")
+        except Exception:
+            pass
+
+    # Blurred image background
+    if fav_img_loaded:
+        try:
+            bg = fav_img_loaded.copy().resize((W, H)).filter(ImageFilter.GaussianBlur(radius=40))
+            dark = Image.new("RGBA", (W, H), (10, 7, 18, 220))
+            base = Image.alpha_composite(bg, dark)
+        except Exception:
+            pass
+
+    draw = ImageDraw.Draw(base)
+
+    # Fonts
+    try:
+        font_title = ImageFont.truetype("Poppins-Bold.ttf", 44)
+        font_sub = ImageFont.truetype("Poppins-Regular.ttf", 18)
+        font_box_title = ImageFont.truetype("Poppins-Medium.ttf", 18)
+        font_box_val = ImageFont.truetype("Poppins-Bold.ttf", 34)
+        font_small = ImageFont.truetype("Poppins-Regular.ttf", 15)
+    except IOError:
+        font_title = font_sub = font_box_title = font_box_val = font_small = ImageFont.load_default()
+
+    # ─── OUTER GRADIENT FRAME (full borders) ───
+    frame_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    fd = ImageDraw.Draw(frame_layer)
+    thickness = 4
+    for x in range(W):
+        t = x / W
+        c = lerp(PURPLE_DEEP, PINK_DEEP, t)
+        fd.line([(x, 0), (x, thickness)], fill=c)
+        fd.line([(x, H - thickness), (x, H)], fill=lerp(BLUE, CYAN, t))
+    for y in range(H):
+        t = y / H
+        fd.line([(0, y), (thickness, y)], fill=lerp(PURPLE_DEEP, BLUE, t))
+        fd.line([(W - thickness, y), (W, y)], fill=lerp(PINK_DEEP, CYAN, t))
+    base = Image.alpha_composite(base, frame_layer)
+    draw = ImageDraw.Draw(base)
+
+    # Corner accent triangles
+    cs = 18
+    draw.polygon([(0, 0), (cs, 0), (0, cs)], fill=GOLD)
+    draw.polygon([(W, 0), (W - cs, 0), (W, cs)], fill=PINK)
+    draw.polygon([(0, H), (cs, H), (0, H - cs)], fill=CYAN)
+    draw.polygon([(W, H), (W - cs, H), (W, H - cs)], fill=PURPLE)
+
+    # ─── CHARACTER IMAGE BOX (left) ───
+    char_x1, char_y1, char_x2, char_y2 = 28, 28, 428, 488
+    if fav_img_loaded:
+        try:
+            ci = fav_img_loaded.copy()
+            sw, sh = ci.size
+            crop_size = min(sw, sh)
+            left = (sw - crop_size) // 2
+            top = (sh - crop_size) // 2
+            ci = ci.crop((left, top, left + crop_size, top + crop_size))
+            ci = ci.resize((400, 460), Image.LANCZOS)
+            mask = Image.new("L", (400, 460), 0)
+            ImageDraw.Draw(mask).rounded_rectangle([0, 0, 400, 460], radius=32, fill=255)
+            ci.putalpha(mask)
+            base.paste(ci, (char_x1, char_y1), ci)
+        except Exception:
+            draw.rounded_rectangle([char_x1, char_y1, char_x2, char_y2], radius=32, fill=CARD_BG)
+    else:
+        draw.rounded_rectangle([char_x1, char_y1, char_x2, char_y2], radius=32, fill=CARD_BG)
+
+    draw_glow_rect(base, [char_x1, char_y1, char_x2, char_y2], PINK, radius=32, glow_size=8, border_width=3)
+    # Inner accent line
+    draw.rounded_rectangle(
+        [char_x1 + 5, char_y1 + 5, char_x2 - 5, char_y2 - 5],
+        radius=27, outline=(*WHITE[:3], 40), width=1,
+    )
+
+    # ─── NAME / UID / BADGE ───
+    display_name = f"@{username}" if username else first_name
+    draw.text((460, 38), display_name, fill=WHITE, font=font_title)
+    draw.text((460, 92), f"UID: {target_id}", fill=DIM, font=font_sub)
+    # PROFILE badge
+    draw.rounded_rectangle([460, 122, 555, 146], radius=12, fill=PURPLE_DEEP)
+    draw.text((472, 126), "✦ PROFILE", fill=WHITE, font=font_small)
+
+    # ─── 1. RANK CARD (gold) ───
+    rx1, ry1, rx2, ry2 = 460, 160, 700, 280
+    draw.rounded_rectangle([rx1, ry1, rx2, ry2], radius=20, fill=CARD_BG)
+    draw_glow_rect(base, [rx1, ry1, rx2, ry2], GOLD, radius=20, glow_size=6, border_width=2)
+    draw.text((rx1 + 22, ry1 + 18), "🏆 RANKING", fill=GOLD, font=font_box_title)
+    draw.text((rx1 + 22, ry1 + 55), f"#{rank}", fill=WHITE, font=font_box_val)
+    draw.text((rx1 + 22, ry1 + 100), "Global Leaderboard", fill=MUTE, font=font_small)
+
+    # ─── 2. BALANCE CARD (purple) ───
+    bx1, by1, bx2, by2 = 720, 160, 960, 280
+    draw.rounded_rectangle([bx1, by1, bx2, by2], radius=20, fill=CARD_BG)
+    draw_glow_rect(base, [bx1, by1, bx2, by2], PURPLE, radius=20, glow_size=6, border_width=2)
+    draw.text((bx1 + 22, by1 + 18), "💎 AESTRITE", fill=PURPLE, font=font_box_title)
+    draw.text((bx1 + 22, by1 + 55), f"{balance:,}", fill=WHITE, font=font_box_val)
+    draw.text((bx1 + 22, by1 + 100), "Currency Balance", fill=MUTE, font=font_small)
+
+    # ─── 3. COLLECTION CARD (cyan, full width) ───
+    cx1, cy1, cx2, cy2 = 460, 300, 960, 480
+    draw.rounded_rectangle([cx1, cy1, cx2, cy2], radius=22, fill=CARD_BG)
+    draw_glow_rect(base, [cx1, cy1, cx2, cy2], CYAN, radius=22, glow_size=6, border_width=2)
+
+    # Header + count + percent
+    draw.text((cx1 + 22, cy1 + 18), "👑 COLLECTED CHARACTERS", fill=CYAN, font=font_box_title)
+    count_text = f"{unique_chars} / {total_game}"
+    draw.text((cx1 + 22, cy1 + 55), count_text, fill=WHITE, font=font_box_val)
+    pct_text = f"{int(harem_pct)}%"
+    pct_w = draw.textlength(pct_text, font=font_box_val)
+    draw.text((cx2 - 22 - pct_w, cy1 + 65), pct_text, fill=PINK, font=font_box_val)
+
+    # ─── Multi-color gradient progress bar ───
+    bar_x1, bar_x2 = cx1 + 22, cx2 - 22
+    bar_y = cy1 + 125
+    bar_w = bar_x2 - bar_x1
+    bar_h = 16
+    draw.rounded_rectangle([bar_x1, bar_y, bar_x2, bar_y + bar_h], radius=bar_h // 2, fill=(45, 35, 60, 255))
+
+    if harem_pct > 0:
+        fill_w = max(2, int(bar_w * harem_pct / 100))
+        # Gradient fill
+        grad = Image.new("RGBA", (fill_w, bar_h), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(grad)
+        for x in range(fill_w):
+            t = x / max(1, fill_w)
+            gd.line([(x, 0), (x, bar_h)], fill=lerp(PURPLE, PINK, t))
+        bar_mask = Image.new("L", (fill_w, bar_h), 0)
+        ImageDraw.Draw(bar_mask).rounded_rectangle([0, 0, fill_w, bar_h], radius=bar_h // 2, fill=255)
+        grad.putalpha(bar_mask)
+        # Pink glow behind the bar
+        glow = Image.new("RGBA", (fill_w + 40, bar_h + 20), (0, 0, 0, 0))
+        gd2 = ImageDraw.Draw(glow)
+        gd2.rounded_rectangle([0, 0, fill_w, bar_h], radius=bar_h // 2, fill=(*PINK[:3], 110))
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=7))
+        base.alpha_composite(glow, (bar_x1 - 20, bar_y - 10))
+        base.paste(grad, (bar_x1, bar_y), grad)
+        # Knob
+        knob_x = bar_x1 + fill_w
+        draw.ellipse([knob_x - 8, bar_y - 4, knob_x + 8, bar_y + bar_h + 4], fill=WHITE)
+        draw.ellipse([knob_x - 5, bar_y - 1, knob_x + 5, bar_y + bar_h + 1], fill=PINK)
+
+    draw.text((cx1 + 22, cy1 + 155), "Harem Progress", fill=MUTE, font=font_small)
+
+    # ==================== CAPTION ====================
+    caption_text = (
+        f"✨ <b>Passport Profile of {first_name}</b>\n\n"
+        f"<blockquote expandable>"
+        f"🏅 <b>Achievements:</b> {unlocked_ach} Unlocked\n"
+        f"🔥 <b>Daily Streak:</b> {streak} Days\n"
+        f"🎒 <b>Inventory Items:</b> {inv_count} Total\n"
+        f"🛒 <b>Market Trades:</b> {purchases} Done\n"
+        f"📊 <b>All-time Summons:</b> {total_summons:,}\n"
+        f"🕒 <b>Last Daily Claimed:</b> {last_daily[:10] if last_daily else 'Never'}\n"
+        f"────────────────────\n"
+        f"Progress: {progress_bar(harem_pct, 12)} {harem_pct:.1f}%\n"
+        f"</blockquote>"
+    )
+
+    bio = io.BytesIO()
+    bio.name = "profile.png"
+    base.convert("RGB").save(bio, "PNG", quality=95)
+    bio.seek(0)
+
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎒 Check Collection", switch_inline_query_current_chat=f"collection.{user_id}")]
+    ])
+
+    await update.message.reply_photo(
+        photo=bio,
+        caption=caption_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=reply_markup,
+    )
+
+
+def register(app):
+    app.add_handler(CommandHandler("profile", profile_cmd))
+
