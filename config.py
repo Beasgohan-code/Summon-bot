@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== 🔑 BOT TOKEN ====================
 # ⚠️ Method 1: Direct (easiest for Termux)
-BOT_TOKEN = "8869362388:AAGRAu6BwTi07SWjbWLisBHohB4rwe0PCSk"
+BOT_TOKEN=
 
 # ⚠️ Method 2: Environment variable (safer)
 # BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
@@ -21,17 +21,17 @@ REWARD_COINS = 20           # coins per correct guess
 REACTIONS = ["🔥", "🎉", "👍", "💯", "⚡", "🥳", "👀", "✨"]
 
 # ==================== 👑 OWNER ====================
-# ബോട്ടിന്റെ ഉടമയുടെ Telegram ID
-OWNER_ID = 6265999542
-IMGBB_API_KEY="73adf9298fcf66fd6897d2be9e539670"
+# Telegram ID
+OWNER_ID =
+IMGBB_API_KEY=
 
-# Owner panel പാസ്‌വേഡ് (നമ്പർപാഡ് ഉപയോഗിക്കുമ്പോൾ)
+# Owner panel 
 OWNER_PANEL_PASSWORD = "7736"
 
 
 # ==================== 🤖 BOT IDENTITY ====================
 BOT_USERNAME = "Summon_collection_bot"          # BotFather username
-OWNER_USERNAME = "og_gohan"                      # നിങ്ങളുടെ username (no @)
+OWNER_USERNAME = "og_gohan"                      #  username (no @)
 SUPPORT_CHAT = "https://t.me/summon_official"
 UPDATE_CHANNEL = "https://t.me/Beastxgohan"
 DB_CHANNEL_ID = -1003858966339
@@ -39,18 +39,17 @@ DB_CHANNEL_ID = -1003858966339
 # ==================== 💾 DATABASE ====================
 DB_NAME = "summon.db"
 
-# Group-ൽ എത്ര മെസ്സേജിന് ശേഷം character spawn ചെയ്യണം
+#  character spawn time
 DEFAULT_SPAWN_LIMIT = 100
 
 
 # ==================== 📊 ECONOMY ====================
-# പുതിയ യൂസറിന് കിട്ടുന്ന സ്റ്റാർട്ടിംഗ് ബാലൻസ്
 STARTING_BALANCE = 500
 
-# Daily claim ൽ കിട്ടുന്ന തുക
+# Daily claim
 DAILY_REWARD = 5000
 
-# Spin ചെയ്യുമ്പോൾ കിട്ടുന്ന റേഞ്ച്
+# Spin 
 SPIN_MIN_REWARD = 100
 SPIN_MAX_REWARD = 1000
 SPIN_BONUS_MIN = 500
@@ -63,7 +62,7 @@ HCLAIM_COOLDOWN_HOURS = 24
 
 
 # ==================== 🛒 SHOP PRICES ====================
-# Rarity അനുസരിച്ച് price
+# Rarity price
 PRICE = {
     "⚪ Common": 15000,
     "🔵 Rare": 25000,
@@ -117,18 +116,18 @@ REFRESH_PRICE = 10000
 
 
 # ==================== 🛡️ ANTI-SPAM ====================
-SPAM_LIMIT = 25  # ഒരു മിനിറ്റിൽ ഇത്ര messages-ൽ കൂടുതൽ വന്നാൽ ban
+SPAM_LIMIT = 20 # ഒരു മിനിറ്റിൽ ഇത്ര messages-ൽ കൂടുതൽ വന്നാൽ ban
 
 
 # ==================== 🖼️ IMAGES ====================
-# Channel post IDs (Telegram-ൽ message ആയി forward ചെയ്തത്)
+# Channel post IDs 
 TOP_IMAGE = "https://o.uguu.se/ooABzMzy.jpg"
 SHOP_IMAGE = "https://o.uguu.se/ooABzMzy.jpg"
 HELP_IMAGE = "https://o.uguu.se/ooABzMzy.jpg"
 
 
 # ==================== 📢 BROADCAST ====================
-# Owner broadcast ചെയ്യാൻ ഉപയോഗിക്കുന്റ channel/group
+# Owner broadcast channel/group
 SUPPORT_GROUP_ID = -1003908312302
 GROUP_LINK = "https://t.me/summon_official"
 
@@ -152,13 +151,13 @@ RARITY_EMOJI = {
 }
 
 # ==================== 🎨 FONT ====================
-# Bot messages-ന് ഏത് font ഉപയോഗിക്കണം
+# Bot messages
 # 'mono' | 'fraktur' | 'script' | 'double'
 DEFAULT_FONT = "mono"
 
 
 # ==================== ⚙️ FEATURE TOGGLES ====================
-# ഏത് features enable ആണ്
+#
 ENABLE_STREAK = True
 ENABLE_ACHIEVEMENTS = True
 ENABLE_MARKET = True
