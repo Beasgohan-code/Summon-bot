@@ -10,11 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 # ==================== 🔑 BOT TOKEN ====================
-# ⚠️ Method 1: Direct (easiest for Termux)
-BOT_TOKEN=
+
 
 # ⚠️ Method 2: Environment variable (safer)
-# BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 
 GUESS_TIMEOUT = 30         # 5 minutes
 REWARD_COINS = 20           # coins per correct guess
@@ -22,8 +21,8 @@ REACTIONS = ["🔥", "🎉", "👍", "💯", "⚡", "🥳", "👀", "✨"]
 
 # ==================== 👑 OWNER ====================
 # Telegram ID
-OWNER_ID =
-IMGBB_API_KEY=
+OWNER_ID = os.getenv("OWNER_ID")
+IMGBB_API_KEY= os.getenv("IMGBB_API_KEY")
 
 # Owner panel 
 OWNER_PANEL_PASSWORD = "7736"
