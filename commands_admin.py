@@ -35,6 +35,9 @@ from commands_user import check_ban, send_character_media
 
 logger = logging.getLogger(__name__)
 
+
+OWNER_ID = 6265999542
+
 RARITY_DISPLAY = {
     1: "⚪ Common", 2: "🔵 Rare", 3: "💮 Special Edition", 
     4: "⭐ Legendary", 5: "🛸 Mythic Edition",
