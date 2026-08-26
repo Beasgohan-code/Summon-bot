@@ -1,3 +1,4 @@
+from storage import connect as db_connect
 import sqlite3
 import hashlib
 import logging
@@ -117,7 +118,7 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_query = update.inline_query.query.strip()
         my_user_id = update.effective_user.id
 
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
 
         inline_results = []
@@ -234,7 +235,7 @@ async def collection_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query.query.strip()
     results = []
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # =========================================================================

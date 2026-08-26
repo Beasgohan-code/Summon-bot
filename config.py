@@ -15,17 +15,21 @@ logger = logging.getLogger(__name__)
 # ⚠️ Method 2: Environment variable (safer)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 
-GUESS_TIMEOUT = 30         # 5 minutes
+GUESS_TIMEOUT = 30         # seconds
 REWARD_COINS = 20           # coins per correct guess
 REACTIONS = ["🔥", "🎉", "👍", "💯", "⚡", "🥳", "👀", "✨"]
 
 # ==================== 👑 OWNER ====================
 # Telegram ID
-OWNER_ID = os.getenv("OWNER_ID")
-IMGBB_API_KEY= os.getenv("IMGBB_API_KEY")
+_raw_owner_id = os.getenv("OWNER_ID", "0")
+try:
+    OWNER_ID = int(_raw_owner_id)
+except ValueError as exc:
+    raise RuntimeError("OWNER_ID must be a numeric Telegram user ID") from exc
+IMGBB_API_KEY = os.getenv("IMGBB_API_KEY")
 
-# Owner panel 
-OWNER_PANEL_PASSWORD = "7736"
+# Owner panel password must be supplied through the environment.
+OWNER_PANEL_PASSWORD = os.getenv("OWNER_PANEL_PASSWORD", "")
 
 
 # ==================== 🤖 BOT IDENTITY ====================
@@ -36,7 +40,10 @@ UPDATE_CHANNEL = "https://t.me/Beastxgohan"
 DB_CHANNEL_ID = -1003858966339
 
 # ==================== 💾 DATABASE ====================
-DB_NAME = "summon.db"
+DB_NAME = os.getenv("SQLITE_DB_PATH", "summon.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+MONGO_URI = os.getenv("MONGO_URI", "").strip()
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "summon_bot").strip() or "summon_bot"
 
 #  character spawn time
 DEFAULT_SPAWN_LIMIT = 100

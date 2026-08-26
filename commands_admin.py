@@ -1,3 +1,4 @@
+from storage import connect as db_connect
 import base64
 import os
 import aiohttp
@@ -36,7 +37,6 @@ from commands_user import check_ban, send_character_media
 logger = logging.getLogger(__name__)
 
 
-OWNER_ID = 6265999542
 
 RARITY_DISPLAY = {
     1: "⚪ Common", 2: "🔵 Rare", 3: "💮 Special Edition", 
@@ -69,19 +69,7 @@ async def _deny(update):
 def generate_code(length=7):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-def is_owner(user_id):
-    return user_id == OWNER_ID
 
-def is_sudo(user_id):
-    if is_owner(user_id):
-        return True
-
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM sudo_users WHERE user_id = ?", (user_id,))
-    exists = cursor.fetchone()
-    conn.close()
-    return exists is not None
 
 
 # ==========================
@@ -110,7 +98,7 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if target_id == OWNER_ID: 
         return await update.message.reply_text("❌ Cannot ban yourself, Boss!")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # 1️⃣ മെയിൻ users ടേബിളിൽ ബാൻ 1 ആക്കുന്നു
@@ -145,7 +133,7 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_id: 
         return await update.message.reply_text("💡 <b>Usage:</b> Reply to a message with <code>/unban</code> or use <code>/unban [user_id]</code>", parse_mode="HTML")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # 1️⃣ മെയിൻ ടേബിളിൽ ബാൻ മാറ്റുന്നു
@@ -218,7 +206,7 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     char_id = context.args[1]
 
     # ഡാറ്റാബേസ് ഓപ്പറേഷൻസ്
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM user_collection WHERE user_id=? AND character_id=?", (int(user_id), char_id))
     conn.commit()
@@ -337,7 +325,7 @@ async def upload_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rarity = RARITY_DISPLAY[rarity_id]
 
         # 3. Generate next ID (gap-filling)
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
 
         cursor.execute("SELECT id FROM characters")
@@ -524,7 +512,7 @@ async def upload_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ====== SUCCESS → save URL to DB ======
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
         
         if action == "cb":
@@ -582,7 +570,7 @@ async def trigger_spawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2. ഡാറ്റാബേസിൽ നിന്ന് ഒരു റാൻഡം ക്യാരക്ടറിനെ എടുക്കുന്നു
     db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
     
     cursor.execute("""
@@ -654,7 +642,7 @@ async def checkspawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     default_limit = DEFAULT_SPAWN_LIMIT if 'DEFAULT_SPAWN_LIMIT' in globals() else 100
 
     # 2️⃣ ഡാറ്റാബേസിൽ നിന്ന് ഗ്രൂപ്പ് സെറ്റിങ്സ് എടുക്കുന്നു
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
     
     # ടേബിൾ ഇല്ലെങ്കിൽ എറർ വരാതിരിക്കാൻ നിർബന്ധമായും ക്രിയേറ്റ് ചെയ്യുന്നു
@@ -711,7 +699,7 @@ async def changetime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # ഡാറ്റാബേസിൽ ഈ ഗ്രൂപ്പുണ്ടോ എന്ന് നോക്കി അപ്‌ഡേറ്റ് ചെയ്യുന്നു
@@ -773,7 +761,7 @@ async def change_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # Update the new chance value inside the database
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("UPDATE rarity_chances SET chance_value=? WHERE rarity_id=?", (new_val, rarity_id))
     conn.commit()
@@ -798,7 +786,7 @@ def get_random_character():
     # Pick a random rarity name based on the 1-18 system weight
     target_rarity = get_rarity() 
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # Try fetching characters belonging to the chosen target rarity
@@ -826,7 +814,7 @@ async def chance_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
         
         # 1️⃣ ടേബിൾ നിർബന്ധമായും ക്രിയേറ്റ് ചെയ്യുന്നു
@@ -896,7 +884,7 @@ async def addsudo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif context.args:
         try:
             target_user_id = int(context.args[0])
-            conn = sqlite3.connect(DB_NAME)
+            conn = db_connect(DB_NAME)
             cursor = conn.cursor()
             cursor.execute("SELECT username FROM users WHERE user_id = ?", (target_user_id,))
             user_row = cursor.fetchone()
@@ -912,7 +900,7 @@ async def addsudo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_owner(target_user_id):
         return await update.message.reply_text("⚡ This user is the Bot Owner and already has full privileges!")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     cursor.execute("SELECT 1 FROM sudo_users WHERE user_id = ?", (target_user_id,))
@@ -944,7 +932,7 @@ async def sudolist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_sudo(user_id):
         return await update.message.reply_text("❌ You do not have permission to view the Sudo List!")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, username, added_at FROM sudo_users ORDER BY added_at ASC")
     rows = cursor.fetchall()
@@ -976,7 +964,7 @@ async def editsudo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(user_id):
         return await update.message.reply_text("❌ Only the Bot Owner can edit the Sudo list!")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, username FROM sudo_users")
     rows = cursor.fetchall()
@@ -1012,7 +1000,7 @@ async def sudo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("manage_sudo_"):
         target_id = int(data.replace("manage_sudo_", ""))
         
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("SELECT username FROM sudo_users WHERE user_id = ?", (target_id,))
         row = cursor.fetchone()
@@ -1041,7 +1029,7 @@ async def sudo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     elif data.startswith("rem_sudo_"):
         target_id = int(data.replace("rem_sudo_", ""))
 
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("SELECT username FROM sudo_users WHERE user_id = ?", (target_id,))
         row = cursor.fetchone()
@@ -1125,7 +1113,7 @@ async def add_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rarity = RARITY_DISPLAY[rarity_id]
 
         # 3. Generate next ID (gap-filling)
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
 
         cursor.execute("SELECT id FROM characters")
@@ -1263,7 +1251,7 @@ async def update_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     char_id = context.args[0].zfill(2)
     field_to_update = context.args[1].lower() if len(context.args) > 1 else "image"
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # ഡാറ്റാബേസിൽ ഈ ക്യാരക്ടർ ഉണ്ടോ എന്ന് നോക്കുന്നു
@@ -1453,7 +1441,7 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     char_id = context.args[0]
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     cursor.execute("SELECT name FROM characters WHERE id = ?", (char_id,))
@@ -1484,7 +1472,7 @@ async def removeall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = int(context.args[0])
 
     # 👤 get user info
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     cursor.execute("SELECT username FROM users WHERE user_id=?", (target_id,))
@@ -1528,7 +1516,7 @@ async def removeall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if data.startswith("rmall_yes_"):
         target_id = int(data.split("_")[2])
 
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -1567,7 +1555,7 @@ async def transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return await update.message.reply_text("❌ Invalid user ID")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # Get source harem
@@ -1633,7 +1621,7 @@ async def gen_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     code = generate_code()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     cursor.execute("SELECT name FROM characters WHERE id=?", (char_id,))
@@ -1685,7 +1673,7 @@ async def redeem_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     code = context.args[0].upper()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # 🔑 get code

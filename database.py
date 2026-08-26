@@ -1,7 +1,8 @@
+from storage import connect as db_connect
 # Step 1: Clean the garbage at lines 
 import logging
 import sqlite3
-from config import DB_NAME, DEFAULT_SPAWN_LIMIT
+from config import DB_NAME, DEFAULT_SPAWN_LIMIT, STARTING_BALANCE
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ RARITY_EMOJI = {
 
 # ==================== DATABASE SETUP ====================
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # 1️⃣ users
@@ -53,17 +54,16 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
-    # WARNINGS
+    # Moderation and group state
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS warnings (
             user_id INTEGER PRIMARY KEY,
             warn_count INTEGER DEFAULT 0,
             warned_by INTEGER,
-            reason TEXT
+            reason TEXT,
+            warned_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
-
-
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS group_settings (
@@ -148,45 +148,6 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
-    # 6️⃣ warnings
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS warnings (
-            user_id INTEGER,
-            warn_count INTEGER DEFAULT 0,
-            warned_by INTEGER,
-            reason TEXT,
-            warned_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    try:
-        cursor.execute("ALTER TABLE warnings ADD COLUMN warn_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE warnings ADD COLUMN warned_by INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE warnings ADD COLUMN reason TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE warnings ADD COLUMN warned_at TEXT DEFAULT CURRENT_TIMESTAMP")
-    except sqlite3.OperationalError:
-        pass
-
-    # 7️⃣ group_settings
-    cursor.execute("""
-            CREATE TABLE IF NOT EXISTS group_settings (
-            chat_id INTEGER PRIMARY KEY,
-            spawn_limit INTEGER DEFAULT 100
-        )
-    """)
-    try:
-        cursor.execute("ALTER TABLE group_settings ADD COLUMN spawn_limit INTEGER DEFAULT 100")
-    except sqlite3.OperationalError:
-        pass
-
     # 8️⃣ claim_list (hclaim weights)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS claim_list (
@@ -256,7 +217,88 @@ def init_db():
     # 🔟 groups
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS groups (
-            chat_id INTEGER PRIMARY KEY
+            chat_id INTEGER PRIMARY KEY,
+            title TEXT,
+            message_count INTEGER DEFAULT 0
+        )
+    """)
+
+    # Legacy/admin tables used by command handlers
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sudo_users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            added_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sudo_admins (
+            user_id INTEGER PRIMARY KEY,
+            added_by INTEGER DEFAULT 0,
+            added_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Premium access and per-command cooldowns
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS premium (
+            user_id INTEGER PRIMARY KEY,
+            expires_at TEXT NOT NULL,
+            granted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            granted_by INTEGER
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cooldowns (
+            user_id INTEGER NOT NULL,
+            command TEXT NOT NULL,
+            last_used TEXT NOT NULL,
+            PRIMARY KEY (user_id, command)
+        )
+    """)
+
+    # Consumable market items
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            item_id TEXT NOT NULL,
+            uses_remaining INTEGER NOT NULL DEFAULT 1,
+            purchased_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL
+        )
+    """)
+
+    # Auction tables are also initialized here so a fresh install is complete.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS auctions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_id TEXT NOT NULL,
+            seller_id INTEGER NOT NULL,
+            start_price INTEGER NOT NULL,
+            highest_bid INTEGER NOT NULL,
+            highest_bidder_id INTEGER,
+            chat_id INTEGER,
+            pinned_msg_id INTEGER,
+            created_at REAL NOT NULL,
+            end_time REAL NOT NULL,
+            status TEXT DEFAULT 'active'
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS auction_bids (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            auction_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            created_at REAL NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS auction_bid_input (
+            user_id INTEGER PRIMARY KEY,
+            auction_id INTEGER NOT NULL,
+            created_at REAL NOT NULL
         )
     """)
 
@@ -341,8 +383,10 @@ def init_db():
     migrations = [
         ("group_settings", "message_count", "INTEGER DEFAULT 0"),
         ("group_settings", "spawn_limit", "INTEGER DEFAULT 100"),
+        ("groups", "title", "TEXT"),
         ("groups", "message_count", "INTEGER DEFAULT 0"),
         ("users", "font_pref", "TEXT DEFAULT 'normal'"),
+        ("users", "last_hclaim_count", "INTEGER DEFAULT 0"),
     ]
     for table, column, col_type in migrations:
         try:
@@ -358,11 +402,11 @@ def init_db():
 
 
 def check_and_register_user(user_id: int, username: str = None, first_name: str = None):
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
         "INSERT OR IGNORE INTO users (user_id, username, first_name, balance, banned) VALUES (?, ?, ?, ?, ?)",
-        (user_id, username, first_name, 500, 0)
+        (user_id, username, first_name, STARTING_BALANCE, 0)
     )
     conn.commit()
     conn.close()
@@ -404,7 +448,7 @@ ACHIEVEMENTS = {
 # ==================== HELPER FUNCTIONS (used by commands) ====================
 
 def execute(query: str, params: tuple = ()):
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(query, params)
     conn.commit()
@@ -412,7 +456,7 @@ def execute(query: str, params: tuple = ()):
 
 
 def fetch_one(query: str, params: tuple = ()):
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(query, params)
     row = cursor.fetchone()
@@ -421,7 +465,7 @@ def fetch_one(query: str, params: tuple = ()):
 
 
 def fetch_all(query: str, params: tuple = ()):
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(query, params)
     rows = cursor.fetchall()
@@ -430,7 +474,7 @@ def fetch_all(query: str, params: tuple = ()):
 
 
 def fetch_value(query: str, params: tuple = ()):
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(query, params)
     row = cursor.fetchone()
@@ -511,16 +555,16 @@ def unban_user(user_id: int):
 
 # Sudo helpers
 def is_sudo(user_id: int) -> bool:
-    return fetch_one("SELECT 1 FROM sudo_admins WHERE user_id = ?", (user_id,)) is not None
+    return fetch_one("SELECT 1 FROM sudo_users WHERE user_id = ?", (user_id,)) is not None
 
 
 def add_sudo_user(user_id: int, username: str = "", added_by: int = 0):
-    execute("INSERT OR REPLACE INTO sudo_admins (user_id, username, added_by) VALUES (?, ?, ?)",
-            (user_id, username, added_by))
+    execute("INSERT OR REPLACE INTO sudo_users (user_id, username) VALUES (?, ?)",
+            (user_id, username))
 
 
 def remove_sudo_user(user_id: int):
-    execute("DELETE FROM sudo_admins WHERE user_id = ?", (user_id,))
+    execute("DELETE FROM sudo_users WHERE user_id = ?", (user_id,))
 
 
 # Streak helpers

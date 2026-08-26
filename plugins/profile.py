@@ -1,5 +1,7 @@
+from storage import connect as db_connect
 import io
 import os  # 👈 ഫോണ്ട് ചെക്ക് ചെയ്യാൻ പുതിയതായി ചേർത്തു
+from pathlib import Path
 import sqlite3
 import math
 import random
@@ -10,6 +12,7 @@ from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
 
 DB = "summon.db"
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ==================== AUTOMATIC FONT DOWNLOADER ====================
 def download_fonts():
@@ -20,14 +23,15 @@ def download_fonts():
         "Poppins-Regular.ttf": "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Regular.ttf"
     }
     for name, url in fonts.items():
-        if not os.path.exists(name):
+        target = BASE_DIR / name
+        if not target.exists():
             try:
                 print(f"📥 Downloading {name}...")
-                r = requests.get(url, timeout=10)
-                with open(name, "wb") as f:
-                    f.write(r.content)
-            except Exception as e:
-                print(f"❌ Failed to download {name}: {e}")
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                target.write_bytes(response.content)
+            except Exception as exc:
+                print(f"❌ Failed to download {name}: {exc}")
 
 # ബോട്ട് റൺ ചെയ്യുമ്പോൾ തന്നെ ഫോണ്ടുകൾ ഉണ്ടെന്ന് ഉറപ്പാക്കുന്നു
 download_fonts()
@@ -69,17 +73,21 @@ def progress_bar(pct, length=10):
     return "▰" * filled + "▱" * (length - filled)
 
 def get_conn():
-    return sqlite3.connect(DB)
+    return db_connect(DB)
 
 def lerp(c1, c2, t):
     return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(4))
 
 def load_font(candidates, size):
     for name in candidates:
+        candidates_to_try = [str(BASE_DIR / name), name]
         try:
-            return ImageFont.truetype(name, size)
+            return ImageFont.truetype(candidates_to_try[0], size)
         except IOError:
-            continue
+            try:
+                return ImageFont.truetype(candidates_to_try[1], size)
+            except IOError:
+                continue
     return ImageFont.load_default()
 
 def smart_truncate(draw, text, font, max_w, suffix="…"):

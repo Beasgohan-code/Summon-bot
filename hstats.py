@@ -1,3 +1,4 @@
+from storage import connect as db_connect
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from telegram import Update
@@ -83,7 +84,7 @@ def fmt(n):
 
 
 def get_conn():
-    return sqlite3.connect(DB)
+    return db_connect(DB)
 
 
 # ==================== DB HELPERS ====================

@@ -1,3 +1,4 @@
+from storage import connect as db_connect
 import time
 from collections import defaultdict
 import logging
@@ -81,7 +82,7 @@ async def track_messages_and_save_group(update: Update, context: ContextTypes.DE
 
     # 🗄️ DATABASE & SPAWN LOGIC 
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
 
         # PART A: ഗ്രൂപ്പ് ഡാറ്റാബേസിൽ ഉണ്ടെന്ന് ഉറപ്പാക്കുന്നു
@@ -108,7 +109,7 @@ async def track_messages_and_save_group(update: Update, context: ContextTypes.DE
 
         # 🚀 ലിമിറ്റ് ആയാൽ ക്യാരക്ടറെ സ്പോൺ ചെയ്യിക്കുന്നു
         if current_count >= spawn_limit:
-            conn = sqlite3.connect(DB_NAME)
+            conn = db_connect(DB_NAME)
             cursor = conn.cursor()
             cursor.execute("UPDATE group_settings SET message_count = 0 WHERE chat_id = ?", (chat_id,))
             conn.commit()

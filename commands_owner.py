@@ -9,7 +9,7 @@ from telegram import (
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from config import OWNER_ID
+from config import OWNER_ID, OWNER_PANEL_PASSWORD
 from database import (
     execute, fetch_one, fetch_all, fetch_value,
     get_total_users, get_total_coins, get_total_groups, get_character_count,
@@ -21,8 +21,7 @@ import sqlite3
 # ==========================================
 # 🔐 CONFIGURATION
 # ==========================================
-OWNER_ID = 6265999542
-OWNER_PANEL_PASSWORD = "7736"
+OWNER_ID = int(OWNER_ID) if OWNER_ID is not None else 0
 
 # Set to keep track of authenticated owners
 owner_auth = set()
@@ -34,24 +33,24 @@ owner_auth = set()
 def get_numpad_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("1", callback_data="op_1" , style="danger"),
-            InlineKeyboardButton("2", callback_data="op_2" , style="danger"),
-            InlineKeyboardButton("3", callback_data="op_3" , style="danger"),
+            InlineKeyboardButton("1", callback_data="op_1"),
+            InlineKeyboardButton("2", callback_data="op_2"),
+            InlineKeyboardButton("3", callback_data="op_3"),
         ],
         [
-            InlineKeyboardButton("4", callback_data="op_4" , style="danger"),
-            InlineKeyboardButton("5", callback_data="op_5" , style="danger"),
-            InlineKeyboardButton("6", callback_data="op_6" , style="danger"),
+            InlineKeyboardButton("4", callback_data="op_4"),
+            InlineKeyboardButton("5", callback_data="op_5"),
+            InlineKeyboardButton("6", callback_data="op_6"),
         ],
         [
-            InlineKeyboardButton("7", callback_data="op_7" , style="danger"),
-            InlineKeyboardButton("8", callback_data="op_8" , style="danger"),
-            InlineKeyboardButton("9", callback_data="op_9" , style="danger"),
+            InlineKeyboardButton("7", callback_data="op_7"),
+            InlineKeyboardButton("8", callback_data="op_8"),
+            InlineKeyboardButton("9", callback_data="op_9"),
         ],
         [
-            InlineKeyboardButton("❌ Clear", callback_data="op_clear" , style="success"),
-            InlineKeyboardButton("0", callback_data="op_0" , style="danger"),
-            InlineKeyboardButton("✔️ Login", callback_data="op_done" , style="primary"),
+            InlineKeyboardButton("❌ Clear", callback_data="op_clear"),
+            InlineKeyboardButton("0", callback_data="op_0"),
+            InlineKeyboardButton("✔️ Login", callback_data="op_done"),
         ]
     ])
 
@@ -62,6 +61,10 @@ def get_numpad_keyboard():
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return  # Non-owners silent block
+    if not OWNER_PANEL_PASSWORD:
+        return await update.message.reply_text(
+            "❌ Owner panel is disabled until OWNER_PANEL_PASSWORD is configured."
+        )
 
     text = (
         "🔐 <b>OWNER ACCESS PANEL</b>\n\n"
@@ -199,6 +202,10 @@ async def ownerpanel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # Action: Authenticate Code
         elif data == "op_done":
+            if not OWNER_PANEL_PASSWORD:
+                return await query.answer(
+                    "Owner panel password is not configured.", show_alert=True
+                )
             if password != OWNER_PANEL_PASSWORD:
                 context.user_data["op_password"] = ""
                 return await query.answer("❌ Wrong Password! Try again.", show_alert=True)
@@ -229,11 +236,11 @@ async def ownerpanel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def open_panel(query):
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎴 Characters", callback_data="op_char" , style="primary"),
+            InlineKeyboardButton("🎴 Characters", callback_data="op_char"),
             InlineKeyboardButton("👥 Users", callback_data="op_users")
         ],
         [
-            InlineKeyboardButton("💰 Economy", callback_data="op_economy" , style="success"),
+            InlineKeyboardButton("💰 Economy", callback_data="op_economy"),
             InlineKeyboardButton("📢 Broadcast", callback_data="op_broadcast")
         ],
         [

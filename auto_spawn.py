@@ -15,6 +15,7 @@ Reuses:
 
 Self-contained. Delete this file → bot still works.
 """
+from storage import connect as db_connect
 
 import sqlite3
 import logging
@@ -51,7 +52,7 @@ def _get_global(name):
 
 def _pick_random_character():
     """Pick any random character from full DB. (Manual /spawn)"""
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # 🎯 FIX: Using SELECT * and handling the tuple safely later
@@ -251,7 +252,7 @@ async def auto_spawn_watcher(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     chat_id = update.effective_chat.id
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
         "SELECT message_count, spawn_limit FROM group_settings WHERE chat_id = ?",

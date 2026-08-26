@@ -1,3 +1,4 @@
+from storage import connect as db_connect
 import sqlite3
 import random
 import re
@@ -7,9 +8,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 from telegram.constants import ParseMode
 
-DB = "summon.db"
-DB_NAME = "summon.db"  
-OWNER_ID = 6265999542  
+from config import DB_NAME, OWNER_ID, HCLAIM_COOLDOWN_HOURS, SUPPORT_GROUP_ID, GROUP_LINK
+from commands_user import check_ban
+
+DB = DB_NAME
+
 
 # ==================== ITEM CATALOG ====================
 ITEMS = {
@@ -52,7 +55,7 @@ def fmt(n):
     except: return str(n)
 
 def get_conn():
-    return sqlite3.connect(DB)
+    return db_connect(DB)
 
 # ==================== DB HELPERS ====================
 def is_premium(user_id):
@@ -340,7 +343,7 @@ async def hclaim_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     username = update.effective_user.username
 
-    if 'check_ban' in globals() and await check_ban(update):
+    if await check_ban(update):
         return
 
     # Anti-Spam
@@ -360,8 +363,8 @@ async def hclaim_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # Official Group Check
-    if 'SUPPORT_GROUP_ID' in globals() and chat_id != SUPPORT_GROUP_ID:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Join", url=globals().get('GROUP_LINK', "https://t.me/summon_official"))]])
+    if chat_id != SUPPORT_GROUP_ID:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Join", url=GROUP_LINK)]])
         return await update.message.reply_text("👋 <b>Join our official group to claim characters!</b>", reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
     prem = is_premium(user_id)
@@ -646,7 +649,7 @@ async def steal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== 🎁 /daily ====================
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'check_ban' in globals() and await check_ban(update):
+    if await check_ban(update):
         return
 
     user = update.effective_user
@@ -934,7 +937,6 @@ def register(app):
     app.add_handler(CommandHandler(["hclaim", "claim"], hclaim_command))
     app.add_handler(CommandHandler("bomb", bomb_cmd))
     app.add_handler(CommandHandler("steal", steal_cmd))
-    app.add_handler(CommandHandler("daily", daily))
     app.add_handler(CommandHandler("skip", skip_cmd))
     app.add_handler(CommandHandler("pinfo", pinfo_cmd))
     app.add_handler(CommandHandler(["summon", "guess", "grab", "collect"], summon))

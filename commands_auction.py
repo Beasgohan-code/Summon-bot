@@ -1,3 +1,4 @@
+from storage import connect as db_connect
 import os
 import os
 # ============================================================
@@ -50,14 +51,14 @@ def format_time_left(seconds: float) -> str:
 
 
 def get_char(char_id):
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT id, name, anime, rarity, img_url FROM characters WHERE id = ?",
         (str(char_id),),
     ).fetchone()
     conn.close()
-    return dict(row) if row else None
+    return {key: row[key] for key in row.keys()} if row else None
 
 
 def _safe_img(char):
@@ -118,16 +119,16 @@ def build_auction_caption(auc: dict, char: dict, highest_bidder_name: str = None
 def build_auction_keyboard(auction_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("💵 +500",     callback_data=f"bid_add_{auction_id}_500",  style="primary"),
-            InlineKeyboardButton("💰 +1,000",   callback_data=f"bid_add_{auction_id}_1000", style="primary"),
+            InlineKeyboardButton("💵 +500",     callback_data=f"bid_add_{auction_id}_500"),
+            InlineKeyboardButton("💰 +1,000",   callback_data=f"bid_add_{auction_id}_1000"),
         ],
         [
-            InlineKeyboardButton("💎 +5,000",   callback_data=f"bid_add_{auction_id}_5000", style="success"),
-            InlineKeyboardButton("🔥 +10,000",  callback_data=f"bid_add_{auction_id}_10000",style="success"),
+            InlineKeyboardButton("💎 +5,000",   callback_data=f"bid_add_{auction_id}_5000"),
+            InlineKeyboardButton("🔥 +10,000",  callback_data=f"bid_add_{auction_id}_10000"),
         ],
         [
-            InlineKeyboardButton("✏️ Custom Bid", callback_data=f"bid_custom_{auction_id}", style="primary"),
-            InlineKeyboardButton("❌ Close",      callback_data="close_menu",               style="danger"),
+            InlineKeyboardButton("✏️ Custom Bid", callback_data=f"bid_custom_{auction_id}"),
+            InlineKeyboardButton("❌ Close",      callback_data="close_menu"),
         ],
     ])
 
@@ -176,7 +177,7 @@ async def _update_pinned_message(context, auc: dict, char: dict, keyboard, highe
 
 # ==================== DB SCHEMA ====================
 def ensure_auction_tables():
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS auctions (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -241,7 +242,7 @@ async def cmd_auction(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Character <code>#{char_id}</code> not found.")
         return
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     try:
         owned = conn.execute(
             "SELECT 1 FROM user_collection WHERE user_id = ? AND character_id = ?",
@@ -289,7 +290,7 @@ async def cmd_auction(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context, update.effective_chat.id, _safe_img(char), caption, keyboard
     )
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     try:
         conn.execute("UPDATE auctions SET pinned_msg_id = ? WHERE id = ?", (msg.message_id, auc_id))
         conn.commit()
@@ -334,7 +335,7 @@ async def cb_place_bid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     now = time.time()
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         auc = conn.execute(
@@ -447,7 +448,7 @@ async def cb_custom_bid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     try:
         conn.execute(
             """INSERT INTO auction_bid_input (user_id, auction_id, created_at)
@@ -474,7 +475,7 @@ async def handle_custom_bid_input(update: Update, context: ContextTypes.DEFAULT_
     user = update.effective_user
     now = time.time()
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
@@ -499,7 +500,7 @@ async def handle_custom_bid_input(update: Update, context: ContextTypes.DEFAULT_
         return
     new_bid = int(text)
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         auc = conn.execute(
@@ -599,7 +600,7 @@ async def cmd_auction_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     now = time.time()
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
@@ -638,7 +639,7 @@ async def cmd_auction_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb.append([InlineKeyboardButton(
             f"👀 #{d['id']} • {name[:18]}",
             callback_data=f"view_auc_{d['id']}",
-            style="primary",
+
         )])
 
     lines.append("\n─────────────────────")
@@ -656,7 +657,7 @@ async def cmd_mybids(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = time.time()
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
@@ -704,7 +705,7 @@ async def cmd_cancel_auction(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     auction_id = int(args[0])
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         auc = conn.execute("SELECT * FROM auctions WHERE id = ? AND status = 'active'", (auction_id,)).fetchone()
@@ -750,7 +751,7 @@ async def cmd_cancel_auction(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def job_close_auctions(context: ContextTypes.DEFAULT_TYPE):
     """Runs every 10s — closes ended auctions, transfers coins & char."""
     now = time.time()
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
@@ -771,7 +772,7 @@ async def _close_auction(context, auc: dict, reason: str = "ended"):
     auction_id = auc["id"]
     char = get_char(auc["character_id"])
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     try:
         conn.execute("UPDATE auctions SET status = 'closed' WHERE id = ?", (auction_id,))
         conn.commit()
@@ -797,7 +798,7 @@ async def _close_auction(context, auc: dict, reason: str = "ended"):
                 parse_mode=ParseMode.HTML,
             )
             if char:
-                conn = sqlite3.connect(DB)
+                conn = db_connect(DB)
                 try:
                     conn.execute(
                         "INSERT OR IGNORE INTO user_collection (user_id, character_id) VALUES (?, ?)",
@@ -813,7 +814,7 @@ async def _close_auction(context, auc: dict, reason: str = "ended"):
     winner_id = auc["highest_bidder_id"]
     final_price = auc["highest_bid"]
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     try:
         conn.execute(
             "UPDATE users SET balance = balance - ? WHERE user_id = ?",
@@ -880,7 +881,7 @@ async def cb_view_auction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return
 
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         auc = conn.execute("SELECT * FROM auctions WHERE id = ?", (auction_id,)).fetchone()
@@ -899,7 +900,7 @@ async def cb_view_auction(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     top_username = None
     if auc.get("highest_bidder_id"):
-        conn = sqlite3.connect(DB)
+        conn = db_connect(DB)
         try:
             r = conn.execute("SELECT username FROM users WHERE user_id = ?", (auc["highest_bidder_id"],)).fetchone()
             top_username = r["username"] if r else None

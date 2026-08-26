@@ -1,3 +1,4 @@
+from storage import connect as db_connect
 import sqlite3
 import asyncio
 import logging
@@ -89,7 +90,7 @@ async def send_character_media(bot, chat_id, db_msg_id, caption, reply_markup=No
 # ==========================
 async def check_ban(update: Update) -> bool:
     user_id = update.effective_user.id
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     cursor.execute("SELECT banned FROM users WHERE user_id=?", (user_id,))
@@ -181,10 +182,10 @@ def get_start_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     o_user = OWNER_USERNAME if 'OWNER_USERNAME' in globals() else "admin"
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Me", url=f"https://t.me/{BOT_USERNAME}?startgroup=true", style="success")],
-        [InlineKeyboardButton("💬 Support", url=SUPPORT_CHAT, style="primary"), InlineKeyboardButton("📢 Channel", url=UPDATE_CHANNEL, style="primary")],
-        [InlineKeyboardButton("❓ Help", callback_data="open_help", style="primary")],
-        [InlineKeyboardButton("👑 Owner", url=f"https://t.me/{OWNER_USERNAME}", style="danger")],
+        [InlineKeyboardButton("➕ Add Me", url=f"https://t.me/{BOT_USERNAME}?startgroup=true")],
+        [InlineKeyboardButton("💬 Support", url=SUPPORT_CHAT), InlineKeyboardButton("📢 Channel", url=UPDATE_CHANNEL)],
+        [InlineKeyboardButton("❓ Help", callback_data="open_help")],
+        [InlineKeyboardButton("👑 Owner", url=f"https://t.me/{OWNER_USERNAME}")],
     ])
     
     return caption, keyboard
@@ -434,7 +435,7 @@ async def view_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
     
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
     
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user.id,))
@@ -463,6 +464,24 @@ async def view_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 5. മറുപടി അയക്കുന്നു
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 # ==========================
+# /PING
+# ==========================
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await check_ban(update):
+        return
+
+    started = time.perf_counter()
+    message = await update.message.reply_text("🏓 Checking connection...")
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    await message.edit_text(
+        f"🏓 <b>Pong!</b>\n\n"
+        f"⚡ Telegram round-trip: <code>{latency_ms} ms</code>\n"
+        f"⏳ Uptime: <code>{get_uptime()}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+# ==========================
 # /DAILY
 # ==========================
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -483,7 +502,7 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # DB_NAME ഗ്ലോബൽ വേരിയബിൾ ആണെന്ന് ഉറപ്പുവരുത്തുക
     db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
 
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
 
     # 3. last_daily കോളം ഉണ്ടെന്ന് ഉറപ്പുവരുത്തുന്നു (നിങ്ങളുടെ പ്രിയപ്പെട്ട ഓട്ടോമാറ്റിക് ആൾട്ടർ ഫീച്ചർ)
@@ -590,7 +609,7 @@ async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # DB_NAME ഗ്ലോബൽ വേരിയബിൾ ആണെന്ന് ഉറപ്പുവരുത്തുക
     db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
     
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
 
     # 3. അവസാനം സ്പിൻ ചെയ്ത സമയം ഡാറ്റാബേസിൽ നിന്ന് എടുക്കുന്നു
@@ -681,7 +700,7 @@ async def set_claim_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if rarity_id < 1 or rarity_id > 18:
         return await update.message.reply_text("❌ Rarity ID must be between 1 and 18!")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("UPDATE claim_list SET chance=? WHERE rarity_id=?", (new_chance, rarity_id))
     conn.commit()
@@ -692,7 +711,7 @@ async def set_claim_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def view_claim_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 📊 ആർക്കും ഗ്രൂപ്പിൽ നിലവിലെ ചാൻസ് റേറ്റ് എത്രയെന്ന് നോക്കാൻ വേണ്ടിയുള്ളതാണ്
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # 1 മുതൽ 18 വരെയുള്ള റാരിറ്റി ചാൻസുകൾ ഡാറ്റാബേസിൽ നിന്ന് എടുക്കുന്നു
@@ -748,7 +767,7 @@ async def collection_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # 📄 CORE FUNCTION: SEND/EDIT COLLECTION PAGE
 # ==========================================
 async def send_collection_page(update, context, user_id, page):
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # യൂസറുടെ ഒറിജിനൽ പേര് സെറ്റ് ചെയ്യുന്നു
@@ -932,26 +951,26 @@ async def send_collection_page(update, context, user_id, page):
 
         # 🎨 ഇൻലൈൻ ബട്ടണുകൾ വിത്ത് കളർ സ്റ്റൈൽസ് (PTB v21+)
     row1 = [
-        InlineKeyboardButton("🌐", switch_inline_query_current_chat=f"collection.{user_id}", style="primary"),
-        InlineKeyboardButton("🎬", switch_inline_query_current_chat=f"collection.{user_id}.amv", style="primary")
+        InlineKeyboardButton("🌐", switch_inline_query_current_chat=f"collection.{user_id}"),
+        InlineKeyboardButton("🎬", switch_inline_query_current_chat=f"collection.{user_id}.amv")
     ]
 
     row2 = []
     
     # പുറകോട്ട് പോകാനുള്ള ബട്ടൺ
     if page > 0:
-        row2.append(InlineKeyboardButton("⬅️", callback_data=f"col_{user_id}_{page-1}", style="primary"))
+        row2.append(InlineKeyboardButton("⬅️", callback_data=f"col_{user_id}_{page-1}"))
     else:
-        row2.append(InlineKeyboardButton("🚫", callback_data="ignore", style="danger"))
+        row2.append(InlineKeyboardButton("🚫", callback_data="ignore"))
 
     # പേജ് നമ്പർ കാണിക്കുന്ന നടുവിലെ ബട്ടൺ
-    row2.append(InlineKeyboardButton(f"{page+1} / {total_pages}", callback_data="ignore", style="success"))
+    row2.append(InlineKeyboardButton(f"{page+1} / {total_pages}", callback_data="ignore"))
 
     # മുന്നോട്ട് പോകാനുള്ള ബട്ടൺ
     if page < total_pages - 1:
-        row2.append(InlineKeyboardButton("➡️", callback_data=f"col_{user_id}_{page+1}", style="primary"))
+        row2.append(InlineKeyboardButton("➡️", callback_data=f"col_{user_id}_{page+1}"))
     else:
-        row2.append(InlineKeyboardButton("🚫", callback_data="ignore", style="danger"))
+        row2.append(InlineKeyboardButton("🚫", callback_data="ignore"))
 
     keyboard = InlineKeyboardMarkup([row1, row2])
 
@@ -1007,7 +1026,7 @@ async def check_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Usage: /check <character_id>")
     
     char_id = context.args[0]
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT name, anime, rarity, msg_id FROM characters WHERE id=?", (char_id,))
     char = cursor.fetchone()
@@ -1048,7 +1067,7 @@ async def owner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         char_id = query.data.replace("owners_", "", 1)
 
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -1122,7 +1141,7 @@ async def back_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         char_id = query.data.replace("backcheck_", "", 1)
 
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -1197,7 +1216,7 @@ async def owners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     char_id = query.data.split("_")[1]
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # 🎯 Joined query to fetch usernames instead of raw IDs
@@ -1334,7 +1353,7 @@ async def favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     char_id = context.args[0]
     user_id = update.effective_user.id
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # 1. ക്യാരക്ടർ ഡാറ്റാബേസിൽ ഉണ്ടോ എന്നും അതിന്റെ വിവരങ്ങളും മീഡിയയും എടുക്കുന്നു
@@ -1387,7 +1406,7 @@ async def give_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = update.message.reply_to_message.from_user
     target_user_id = target.id  # Target user-ude ID
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # 1. Database-il ninnu character details edukkunnu
@@ -1441,7 +1460,7 @@ async def gift_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     char_id = context.args[0]
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # 1. Character database-il undo enn nokkunnu
@@ -1531,7 +1550,7 @@ async def pay_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if target_id == user_id:
         return await update.message.reply_text("❌ You cannot pay money to yourself! 🪙")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
 
     # അയക്കുന്ന ആളുടെ ബാലൻസ് ചെക്ക്
@@ -1577,7 +1596,7 @@ async def give_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return await update.message.reply_text("❌ Invalid user ID or amount number!")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     # യൂസർ ഡാറ്റാബേസിൽ ഉണ്ടോ എന്ന് നോക്കുന്നു
@@ -1615,7 +1634,7 @@ async def rm_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         return await update.message.reply_text("❌ Invalid user ID or amount number!")
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = db_connect(DB_NAME)
     cursor = conn.cursor()
     
     cursor.execute("SELECT balance FROM users WHERE user_id = ?", (target_id,))
@@ -1714,7 +1733,7 @@ async def rarity_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rarity = query.data.replace("rarity_", "")
     db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
 
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -1789,7 +1808,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     db_file = DB_NAME if 'DB_NAME' in globals() else "summon_collection.db"
 
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
 
     # കോയിൻ ബാലൻസ് ചെക്ക് ചെയ്യുന്നു
@@ -1882,7 +1901,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
 
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
 
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user.id,))
@@ -1985,7 +2004,7 @@ async def top_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return await top_back_handler(update, context)
 
     db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
-    conn = sqlite3.connect(db_file)
+    conn = db_connect(db_file)
     cursor = conn.cursor()
 
     text = ""
@@ -2516,7 +2535,7 @@ async def hmode_show_rarities_callback(update, context):
 
     # 2️⃣ ഡാറ്റാബേസിൽ നിന്നും നിലവിലുള്ള എല്ലാ തരം റാരിറ്റികളും എടുക്കുന്നു (Duplicates ഒഴിവാക്കി)
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = db_connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT rarity FROM characters WHERE rarity IS NOT NULL AND rarity != ''")
         rarities = [row[0] for row in cursor.fetchall()]

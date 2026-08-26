@@ -1,3 +1,4 @@
+from storage import connect as db_connect
 import os
 # ~/summon-bot/commands_hstats.py
 # /hstats and /me — uses Telegram native <blockquote expandable> for collapse.
@@ -52,7 +53,7 @@ def rarity_emoji(rarity_text):
 
 
 def get_conn():
-    return sqlite3.connect(DB)
+    return db_connect(DB)
 
 
 ACHIEVEMENTS = {
@@ -73,7 +74,7 @@ ACHIEVEMENTS = {
 
 
 def get_user_data(user_id):
-    conn = sqlite3.connect(DB)
+    conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     u = cur.execute(
@@ -222,8 +223,8 @@ def build_hstats_html(user_id, first_name, username):
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔄 Refresh", callback_data=f"hstats_refresh_{user_id}", style="primary"),
-            InlineKeyboardButton("🗑 Close", callback_data="close_menu", style="danger"),
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"hstats_refresh_{user_id}"),
+            InlineKeyboardButton("🗑 Close", callback_data="close_menu"),
         ],
     ])
 

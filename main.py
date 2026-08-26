@@ -1,5 +1,3 @@
-from plugins.profile import register as profile_register
-import sqlite3
 import logging
 import sys
 from datetime import datetime
@@ -31,7 +29,7 @@ from plugins.market import register as market_register
 from commands_user import (
     # helpers
     check_ban, send_character_media,
-    get_uptime, loading_animation,
+    get_uptime, loading_animation, ping_command,
     # user commands
     start_command, help_command, help_callback,
     view_balance, daily, spin, cshop, cshop_callback, 
@@ -76,54 +74,6 @@ from catch_all import track_messages_and_save_group
 logger = logging.getLogger(__name__)
 
 
-# ==========================================
-# 🛠️ DATABASE INITIALIZATION FOR SUDO SYSTEM
-# ==========================================
-def init_sudo_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    # Sudo users list tracking table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sudo_users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            added_at TEXT
-        )
-    """)
-    
-    # Banned users table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS banned_users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-# Initialize on startup
-init_sudo_db()
-
-
-# ==========================================
-# 🛡️ HELPER FUNCTIONS
-# ==========================================
-def is_owner(user_id):
-    return user_id == OWNER_ID
-
-def is_sudo(user_id):
-    if is_owner(user_id):
-        return True
-    
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM sudo_users WHERE user_id = ?", (user_id,))
-    exists = cursor.fetchone()
-    conn.close()
-    return exists is not None
-
-
 # ==================== POST INIT ====================
 
 async def post_init(application: Application):
@@ -131,6 +81,7 @@ async def post_init(application: Application):
     # Bot menu
     commands = [
         BotCommand("start", "👋 Start the bot"),
+        BotCommand("ping", "🏓 Check bot latency"),
         BotCommand("help", "📖 Show help menu"),
         BotCommand("balance", "💰 Check your coins"),
         BotCommand("daily", "📅 Daily reward"),
@@ -232,6 +183,7 @@ def register_handlers(application: Application):
     # ==================== 👤 USER COMMANDS ====================
 
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("ping", ping_command))
     application.add_handler(CommandHandler(["help", "menu", "commands"], help_command))
     application.add_handler(CommandHandler(["balance", "bal"], view_balance))
     application.add_handler(CommandHandler("daily", daily))
@@ -370,14 +322,18 @@ def register_handlers(application: Application):
 
 
 # ==================== MAIN ====================
+def validate_config():
+    if not BOT_TOKEN or BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE":
+        raise RuntimeError("BOT_TOKEN is not configured. Set it in the environment before starting the bot.")
+    if OWNER_ID <= 0:
+        raise RuntimeError("OWNER_ID must be a positive Telegram user ID.")
+
 
 def main():
+    validate_config()
     print("🔧 Initializing database...")
     init_db()
     print("✅ Database ready")
-    init_sudo_db()
-    print("sudo list ready")
-
     print("🔧 Building application...")
     application = (
         Application.builder()
@@ -388,8 +344,6 @@ def main():
 
     print("🔧 Registering handlers...")
     register_handlers(application)
-    profile_register(application)
-
     print("🚀 Starting polling...")
     application.run_polling(
         allowed_updates=["message", "edited_message", "callback_query", "inline_query"],

@@ -1,0 +1,21 @@
+[Unit]
+Description=Summon Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/Summon-bot
+EnvironmentFile=/opt/Summon-bot/.env
+ExecStart=/usr/bin/python3 /opt/Summon-bot/supervisor.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=45
+
+# Keep secrets in .env, not in this unit file.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
