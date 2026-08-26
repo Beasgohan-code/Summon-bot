@@ -6,7 +6,8 @@ import sqlite3
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import SPAM_LIMIT, DB_NAME
-from database import is_banned, ban_user, get_random_character # keeping from your imports
+from database import is_banned, ban_user, get_random_character
+from commands_user import send_character_media
 from auto_spawn import trigger_weighted_spawn, hint_callback, auto_spawn_watcher
 
 logger = logging.getLogger(__name__)

@@ -223,9 +223,7 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🎒 COLLECTION / HAREM INLINE HANDLER (FIXED FOR ALL MEDIA TYPES)
 # =========================================================================
 async def collection_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ✅ ആവശ്യമായ ഇംപോർട്ടുകൾ ഉള്ളിൽ തന്നെ നൽകി സുരക്ഷിതമാക്കി!
-    import sqlite3
-    import hashlib
+    # ✅ Required imports are available at module scope.
     from telegram import (
         InlineQueryResultArticle, InputTextMessageContent, 
         InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, 

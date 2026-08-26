@@ -664,13 +664,6 @@ def get_user(user_id: int):
     return fetch_one("SELECT * FROM users WHERE user_id = ?", (user_id,))
 
 
-def get_top_anime():
-    return fetch_one("""
-        SELECT c.anime, COUNT(uc.character_id) as cnt
-        FROM user_collection uc JOIN characters c ON uc.character_id = c.id
-        GROUP BY c.anime ORDER BY cnt DESC LIMIT 1
-    """)
-
 
 def get_total_groups() -> int:
     return fetch_value("SELECT COUNT(*) FROM groups") or 0

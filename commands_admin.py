@@ -37,6 +37,9 @@ from commands_user import check_ban, send_character_media
 logger = logging.getLogger(__name__)
 
 
+def is_owner(user_id: int) -> bool:
+    return user_id == OWNER_ID
+
 
 RARITY_DISPLAY = {
     1: "⚪ Common", 2: "🔵 Rare", 3: "💮 Special Edition", 
@@ -777,6 +780,30 @@ async def change_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 # 🎲 RANDOM CHARACTER CHOOSE SYSTEM
 # ==========================================
+def get_rarity():
+    """Return a weighted display rarity from the configured spawn pool."""
+    conn = db_connect(DB_NAME)
+    try:
+        rows = conn.execute(
+            "SELECT rarity_id, rarity_name, chance_value FROM rarity_chances WHERE chance_value > 0"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return None
+
+    names = [RARITY_DISPLAY.get(row[0], row[1]) for row in rows]
+    weights = [max(0, int(row[2])) for row in rows]
+    return random.choices(names, weights=weights, k=1)[0]
+
+
+def get_character_media(char_id):
+    """Return the stored Telegram file ID or media URL for a character."""
+    row = get_character(str(char_id))
+    return row[4] if row else None
+
+
 def get_random_character():
     """
     1. First, select a weighted rarity based on the configured drop rates.

@@ -27,7 +27,6 @@ ITEMS = {
 
 COOLDOWN_BOMB = 24 * 3600
 COOLDOWN_STEAL = 3600
-HCLAIM_COOLDOWN_HOURS = 24
 
 # 🚫 Anti-Spam Detector
 user_spam_counter = defaultdict(list)

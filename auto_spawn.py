@@ -126,10 +126,10 @@ async def _post_spawn(context, chat_id, char, source: str = "manual"):
     media_sent = False
     
     # Try to use send_character_media from commands_user.py
-    send_character_media = _get_global("send_character_media")
-    if send_character_media is not None:
+    media_sender = _get_global("send_character_media") or send_character_media
+    if media_sender is not None:
         try:
-            await send_character_media(
+            await media_sender(
                 bot=context.bot,
                 chat_id=chat_id,
                 db_msg_id=msg_id,

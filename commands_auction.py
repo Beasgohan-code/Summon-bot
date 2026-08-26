@@ -1,6 +1,5 @@
 from storage import connect as db_connect
 import os
-import os
 # ============================================================
 # commands_auction.py  —  Anime Auction System v2
 # Beautified gallery UI + live-updating pinned message

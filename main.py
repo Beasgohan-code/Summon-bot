@@ -360,7 +360,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
-
-
-
-        print(f"LOGGED EMOJIS: {found}")
