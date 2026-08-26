@@ -92,23 +92,26 @@ class PostgresCursor:
             return self
 
         translated = _translate_sql(query)
+        self._cursor.execute("SAVEPOINT summon_statement")
         try:
             self._cursor.execute(translated, tuple(params or ()))
         except Exception as exc:
-            self.connection._connection.rollback()
+            self._cursor.execute("ROLLBACK TO SAVEPOINT summon_statement")
+            self._cursor.execute("RELEASE SAVEPOINT summon_statement")
             if psycopg2 is not None and isinstance(exc, psycopg2.Error):
                 raise sqlite3.OperationalError(str(exc)) from exc
             raise
-
         self._columns = [description[0] for description in (self._cursor.description or [])]
         return self
 
     def executemany(self, query: str, params_seq):
         translated = _translate_sql(query)
+        self._cursor.execute("SAVEPOINT summon_many")
         try:
             self._cursor.executemany(translated, params_seq)
         except Exception as exc:
-            self.connection._connection.rollback()
+            self._cursor.execute("ROLLBACK TO SAVEPOINT summon_many")
+            self._cursor.execute("RELEASE SAVEPOINT summon_many")
             if psycopg2 is not None and isinstance(exc, psycopg2.Error):
                 raise sqlite3.OperationalError(str(exc)) from exc
             raise
