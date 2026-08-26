@@ -40,7 +40,9 @@ UPDATE_CHANNEL = "https://t.me/Beastxgohan"
 DB_CHANNEL_ID = -1003858966339
 
 # ==================== 💾 DATABASE ====================
-DB_NAME = os.getenv("SQLITE_DB_PATH", "summon.db")
+# PostgreSQL is the only production runtime database. DB_NAME remains as a
+# compatibility argument for existing helpers and is never used as a file path.
+DB_NAME = os.getenv("DATABASE_NAME", "summon_bot")
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "summon_bot").strip() or "summon_bot"
@@ -176,4 +178,3 @@ DEBUG_MODE = False
 
 if DEBUG_MODE:
     logging.getLogger().setLevel(logging.DEBUG)
-

@@ -32,6 +32,7 @@ from database import (
     get_streak, update_streak,
 )
 from commands_user import check_ban, send_character_media
+from media_urls import require_character_image_url
 
 
 logger = logging.getLogger(__name__)
@@ -233,329 +234,9 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 PENDING_UPLOADS = {}
 COUNTER = {"n": 0}
 
-def new_upload_id():
-    COUNTER["n"] += 1
-    return f"u{COUNTER['n']}"
+# Character uploads are URL-only. Use /add and /update with a verified
+# https://files.catbox.moe/... or https://i.ibb.co/... image URL.
 
-
-# ==========================
-# UPLOAD HOST FUNCTIONS
-# ==========================
-async def upload_to_catbox(local_path: str) -> str:
-    url = "https://catbox.moe/user/api.php"
-    async with aiohttp.ClientSession() as session:
-        data = aiohttp.FormData()
-        data.add_field('reqtype', 'fileupload')
-        data.add_field('fileToUpload',
-                       open(local_path, 'rb'),
-                       filename=Path(local_path).name)
-        async with session.post(url, data=data) as resp:
-            if resp.status != 200:
-                raise Exception(f"HTTP {resp.status}")
-            return (await resp.text()).strip()
-
-
-
-async def upload_to_imgbb(local_path: str) -> str:
-    if not IMGBB_API_KEY:
-        raise Exception("IMGBB_API_KEY not set in config.py")
-
-    url = f"https://api.imgbb.com/1/upload?key={IMGBB_API_KEY}"
-    async with aiohttp.ClientSession() as session:
-        data = aiohttp.FormData()
-        with open(local_path, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode()
-        data.add_field('image', encoded)
-        async with session.post(url, data=data) as resp:
-            result = await resp.json()
-            if not result.get("success"):
-                raise Exception(str(result))
-            return result["data"]["url"]
-
-
-# ==========================
-# /upload COMMAND
-# ==========================
-async def upload_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        return await update.message.reply_text("❌ Not allowed")
-
-    reply = update.message.reply_to_message
-    if not reply:
-        return await update.message.reply_text(
-            "❌ <b>Error: Please reply to an image, video, or GIF!</b>\n\n"
-            "💡 <b>Usage:</b> Reply to media with:\n"
-            "<code>/upload [Char-Name] [Anime-Name] [Rarity_Number]</code>\n"
-            "Example: <code>/upload Son-gohan dragon-ball 3</code>",
-            parse_mode="HTML"
-        )
-
-    # 1. Media handling
-    file_id = None
-    file_type = None
-    if reply.photo:
-        file_id = reply.photo[-1].file_id
-        file_type = "photo"
-    elif reply.video:
-        file_id = reply.video.file_id
-        file_type = "video"
-    elif reply.animation:
-        file_id = reply.animation.file_id
-        file_type = "animation"
-    else:
-        return await update.message.reply_text("❌ Unsupported media type! Use Photo, Video, or GIF.")
-
-    # 2. Args check
-    if len(context.args) != 3:
-        return await update.message.reply_text(
-            "❌ <b>Invalid Format!</b>\n\n"
-            "💡 <b>Format:</b> <code>/upload [Char-Name] [Anime-Name] [Rarity_Number]</code>\n"
-            "Example: <code>/upload Son-gohan dragon-ball 3</code>",
-            parse_mode="HTML"
-        )
-
-    local_path = None
-    conn = None
-    
-    try:
-        char_name = context.args[0].replace("-", " ").title()
-        anime_name = context.args[1].replace("-", " ").title()
-        rarity_id = int(context.args[2])
-
-        if rarity_id not in RARITY_DISPLAY:
-            return await update.message.reply_text("❌ Invalid Rarity ID! Use 1-18.")
-
-        rarity = RARITY_DISPLAY[rarity_id]
-
-        # 3. Generate next ID (gap-filling)
-        conn = db_connect(DB_NAME)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT id FROM characters")
-        existing_ids = []
-        for row in cursor.fetchall():
-            try:
-                existing_ids.append(int(row[0]))
-            except ValueError:
-                continue
-
-        next_number = 1
-        while next_number in existing_ids:
-            next_number += 1
-        char_id = f"{next_number:02d}"
-
-        # 4. Download to ~/summon-bot/uploads/
-        import os
-        upload_dir = os.path.expanduser("~/summon-bot/uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-        local_path = os.path.join(upload_dir, f"upload_{char_id}_{file_type}")
-        # Remove old file if exists
-        if os.path.exists(local_path):
-            os.remove(local_path)
-        try:
-            if file_type == "photo":
-                tg_file = await context.bot.get_file(reply.photo[-1].file_id)
-            elif file_type == "video":
-                tg_file = await context.bot.get_file(reply.video.file_id)
-            elif file_type == "animation":
-                tg_file = await context.bot.get_file(reply.animation.file_id)
-            else:
-                return await update.message.reply_text("❌ Unsupported media type!")
-
-            await tg_file.download_to_drive(local_path)
-        except Exception as e:
-            return await update.message.reply_text(f"❌ Download failed: {e}")
-
-        # 5. Store pending
-        upload_id = new_upload_id()
-        PENDING_UPLOADS[upload_id] = {
-            "file_id": file_id,
-            "file_type": file_type,
-            "char_id": char_id,
-            "char_name": char_name,
-            "anime": anime_name,
-            "rarity": rarity,
-            "local_path": local_path,
-        }
-
-        # 6. Forward to DB channel
-        uploader = update.effective_user
-        uploader_mention = f"<a href='tg://user?id={uploader.id}'>{uploader.first_name}</a>"
-
-        caption_text = (
-            f"📝 <b>New Character Added!</b>\n\n"
-            f"🆔 <b>ID:</b> <code>{char_id}</code>\n"
-            f"<blockquote>🎌 <b>Anime:</b> {anime_name}\n"
-            f"👤 <b>Name:</b> {char_name}\n"
-            f"✨ <b>Rarity:</b> {rarity}\n"
-            f"📂 <b>Type:</b> {file_type.upper()}</blockquote>\n"
-            f"👑 <b>Uploaded By:</b> {uploader_mention}"
-        )
-
-        if file_type == "photo":
-            await context.bot.send_photo(chat_id=DB_CHANNEL_ID, photo=file_id, caption=caption_text, parse_mode="HTML")
-        elif file_type == "video":
-            await context.bot.send_video(chat_id=DB_CHANNEL_ID, video=file_id, caption=caption_text, parse_mode="HTML")
-        elif file_type == "animation":
-            await context.bot.send_animation(chat_id=DB_CHANNEL_ID, animation=file_id, caption=caption_text, parse_mode="HTML")
-
-    except Exception as e:
-        if conn: conn.close()
-        if local_path and Path(local_path).exists():
-            Path(local_path).unlink(missing_ok=True)
-        return await update.message.reply_text(f"❌ Database/Channel Error: {e}")
-
-    # 7. Save to DB (file_id as backup, no URL yet)
-    db_file_value = f"{file_type}_{file_id}"
-    cursor.execute(
-        """INSERT OR REPLACE INTO characters 
-           (id, name, anime, rarity, msg_id, img_url, img_url2) 
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (char_id, char_name, anime_name, rarity, db_file_value, None, None)
-    )
-    conn.commit()
-    conn.close()
-
-    # 8. Show buttons
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📤 Catbox", callback_data=f"up_cb|{upload_id}"),
-            InlineKeyboardButton("📤 ImgBB", callback_data=f"up_ib|{upload_id}"),
-        ],
-        [
-            InlineKeyboardButton("⏭ Skip (file_id only)", callback_data=f"up_skip|{upload_id}"),
-        ],
-    ])
-
-    await update.message.reply_text(
-        f"📝 <b>Character Saved (file_id backup)!</b>\n\n"
-        f"🆔 <b>ID:</b> <code>{char_id}</code>\n"
-        f"👤 <b>Name:</b> {char_name}\n"
-        f"📺 <b>Anime:</b> {anime_name}\n"
-        f"✨ <b>Rarity:</b> {rarity}\n"
-        f"📂 <b>Type:</b> {file_type.upper()}\n"
-        f"📁 <b>Backup:</b> file_id ✅\n\n"
-        f"<b>Upload to a web host for in-app display?</b>",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
-
-
-# ==========================
-# CALLBACK HANDLER
-# ==========================
-async def upload_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    if not data.startswith("up_"):
-        return
-    
-    parts = data.split("|", 1)
-    if len(parts) != 2:
-        return
-    
-    action, upload_id = parts
-    action = action.replace("up_", "")
-    
-    pending = PENDING_UPLOADS.get(upload_id)
-    if not pending:
-        await query.edit_message_text("❌ Session expired. Re-upload with /upload.")
-        return
-    
-    char_id = pending["char_id"]
-    file_id = pending["file_id"]
-    local_path = pending["local_path"]
-    
-    # ====== SKIP ======
-    if action == "skip":
-        await query.edit_message_text(
-            f"✅ <b>Done!</b>\n\n"
-            f"🆔 <code>{char_id}</code> — {pending['char_name']}\n"
-            f"📁 file_id: ✅\n"
-            f"🌐 URL: <i>skipped (file_id only)</i>",
-            parse_mode="HTML"
-        )
-        del PENDING_UPLOADS[upload_id]
-        if local_path and Path(local_path).exists():
-            Path(local_path).unlink(missing_ok=True)
-        return
-    
-    # ====== UPLOAD ======
-    host_name = "Catbox" if action == "cb" else "ImgBB"
-    await query.edit_message_text(f"⏳ Uploading to <b>{host_name}</b>...", parse_mode="HTML")
-    
-    img_url = None
-    error = None
-    
-    try:
-        if action == "cb":
-            img_url = await upload_to_catbox(local_path)
-        elif action == "ib":
-            img_url = await upload_to_imgbb(local_path)
-    except Exception as e:
-        error = str(e)
-    finally:
-        if local_path and Path(local_path).exists():
-            Path(local_path).unlink(missing_ok=True)
-    
-    # ====== FAILED → file_id already saved ======
-    if not img_url:
-        await query.edit_message_text(
-            f"⚠️ <b>{host_name} upload failed</b>\n\n"
-            f"🆔 <code>{char_id}</code> — {pending['char_name']}\n"
-            f"📁 file_id: ✅ (saved as backup)\n"
-            f"❌ Error: <code>{error}</code>\n\n"
-            f"<i>Character is still saved with file_id only.</i>",
-            parse_mode="HTML"
-        )
-        del PENDING_UPLOADS[upload_id]
-        return
-    
-    # ====== SUCCESS → save URL to DB ======
-    try:
-        conn = db_connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        if action == "cb":
-            cursor.execute(
-                "UPDATE characters SET img_url = ? WHERE id = ?",
-                (img_url, char_id)
-            )
-        elif action == "ib":
-            cursor.execute(
-                "UPDATE characters SET img_url2 = ? WHERE id = ?",
-                (img_url, char_id)
-            )
-        
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        await query.edit_message_text(
-            f"⚠️ <b>Uploaded but DB save failed</b>\n\n"
-            f"🆔 <code>{char_id}</code>\n"
-            f"🌐 {img_url}\n"
-            f"❌ DB Error: <code>{e}</code>",
-            parse_mode="HTML"
-        )
-        del PENDING_UPLOADS[upload_id]
-        return
-    
-    # ====== ALL GOOD ======
-    await query.edit_message_text(
-        f"✅ <b>Character Saved!</b>\n\n"
-        f"🆔 <code>{char_id}</code> — {pending['char_name']}\n"
-        f"📁 file_id: ✅\n"
-        f"🌐 {host_name}: {img_url}",
-        parse_mode="HTML"
-    )
-    del PENDING_UPLOADS[upload_id]
-
-
-# ==========================
-# /SPAWN
-# ==========================
 async def trigger_spawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1. സുരക്ഷാ ചെക്ക് (Sudo/Owner ആണോ എന്ന് പരിശോധിക്കുന്നു)
     # നിങ്ങളുടെ ബോട്ടിന്റെ രീതി അനുസരിച്ച് check_sudo(update) അല്ലെങ്കിൽ OWNER_ID ചെക്ക് ഉപയോഗിക്കാം
@@ -572,12 +253,12 @@ async def trigger_spawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     # 2. ഡാറ്റാബേസിൽ നിന്ന് ഒരു റാൻഡം ക്യാരക്ടറിനെ എടുക്കുന്നു
-    db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
+    db_file = DB_NAME
     conn = db_connect(db_file)
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT id, name, anime, rarity, msg_id 
+        SELECT id, name, anime, rarity, image_url
         FROM characters 
         ORDER BY RANDOM() 
         LIMIT 1
@@ -588,7 +269,7 @@ async def trigger_spawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not char:
         return await update.message.reply_text("❌ No characters found in the database.")
 
-    char_id, name, anime, rarity, msg_id = char
+    char_id, name, anime, rarity, image_url = char
 
     # 3. സപspawn ചെയ്ത ക്യാരക്ടറിന്റെ വിവരങ്ങൾ മെമ്മറിയിൽ സൂക്ഷിക്കുന്നു (ക്ലെയിം ചെയ്യാൻ വേണ്ടി)
     # ഗ്രൂപ്പ് ലെവലിൽ ട്രാക്ക് ചെയ്യാൻ chat_data ഉപയോഗിക്കുന്നതാണ് ഏറ്റവും ഉചിതം
@@ -620,7 +301,7 @@ async def trigger_spawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_character_media(
                 bot=context.bot, 
                 chat_id=chat_id, 
-                db_msg_id=msg_id, 
+                image_url=image_url,
                 caption=text
             )
         except Exception as e:
@@ -817,7 +498,7 @@ def get_random_character():
     cursor = conn.cursor()
     
     # Try fetching characters belonging to the chosen target rarity
-    cursor.execute("SELECT id, name, anime, rarity, msg_id FROM characters WHERE rarity=?", (target_rarity,))
+    cursor.execute("SELECT id, name, anime, rarity, image_url FROM characters WHERE rarity=?", (target_rarity,))
     chars = cursor.fetchall()
     
     if chars:
@@ -826,7 +507,7 @@ def get_random_character():
         
     # FALLBACK: If the chosen rarity has no characters uploaded yet,
     # pick any random character from the entire database to prevent a bot crash.
-    cursor.execute("SELECT id, name, anime, rarity, msg_id FROM characters")
+    cursor.execute("SELECT id, name, anime, rarity, image_url FROM characters")
     all_chars = cursor.fetchall()
     conn.close()
     
@@ -1086,375 +767,102 @@ async def sudo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # /add COMMAND (SUDO)
 # ==========================
 async def add_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    """Create a character with a direct Catbox or ImgBB HTTPS image URL.
 
-    # 🎯 Sudo Privilege Check
-    if not is_sudo(user_id):
+    Usage: /add <name> <anime> <rarity-id> <image-url>
+    """
+    if not is_sudo(update.effective_user.id):
         return await update.message.reply_text("❌ You do not have Sudo privileges!")
-
-    reply = update.message.reply_to_message
-    if not reply:
+    if len(context.args) != 4:
         return await update.message.reply_text(
-            "❌ <b>Error: Please reply to an image, video, or GIF!</b>\n\n"
-            "💡 <b>Usage:</b> Reply to media with:\n"
-            "<code>/add [Char-Name] [Anime-Name] [Rarity_Number]</code>\n"
-            "Example: <code>/add Son-gohan dragon-ball 3</code>",
-            parse_mode="HTML"
+            "💡 Usage: <code>/add &lt;name&gt; &lt;anime&gt; &lt;rarity-id&gt; &lt;Catbox-or-ImgBB-HTTPS-URL&gt;</code>",
+            parse_mode=ParseMode.HTML,
         )
 
-    # 1. Media handling
-    file_id = None
-    file_type = None
-    if reply.photo:
-        file_id = reply.photo[-1].file_id
-        file_type = "photo"
-    elif reply.video:
-        file_id = reply.video.file_id
-        file_type = "video"
-    elif reply.animation:
-        file_id = reply.animation.file_id
-        file_type = "animation"
-    else:
-        return await update.message.reply_text("❌ Unsupported media type! Use Photo, Video, or GIF.")
-
-    # 2. Args check
-    if len(context.args) != 3:
-        return await update.message.reply_text(
-            "❌ <b>Invalid Format!</b>\n\n"
-            "💡 <b>Format:</b> <code>/add [Char-Name] [Anime-Name] [Rarity_Number]</code>\n"
-            "Example: <code>/add Son-gohan dragon-ball 3</code>",
-            parse_mode="HTML"
-        )
-
-    local_path = None
-    conn = None
-
+    char_name = context.args[0].replace("-", " ").title()
+    anime_name = context.args[1].replace("-", " ").title()
     try:
-        char_name = context.args[0].replace("-", " ").title()
-        anime_name = context.args[1].replace("-", " ").title()
-        rarity_id = int(context.args[2])
+        rarity = RARITY_DISPLAY[int(context.args[2])]
+        image_url = require_character_image_url(context.args[3])
+    except (ValueError, KeyError) as exc:
+        return await update.message.reply_text(f"❌ {exc}")
 
-        if rarity_id not in RARITY_DISPLAY:
-            return await update.message.reply_text("❌ Invalid Rarity ID! Use 1-18.")
-
-        rarity = RARITY_DISPLAY[rarity_id]
-
-        # 3. Generate next ID (gap-filling)
-        conn = db_connect(DB_NAME)
+    conn = db_connect(DB_NAME)
+    try:
         cursor = conn.cursor()
-
         cursor.execute("SELECT id FROM characters")
-        existing_ids = []
-        for row in cursor.fetchall():
-            try:
-                existing_ids.append(int(row[0]))
-            except ValueError:
-                continue
-
+        existing_ids = {int(row[0]) for row in cursor.fetchall() if str(row[0]).isdigit()}
         next_number = 1
         while next_number in existing_ids:
             next_number += 1
         char_id = f"{next_number:02d}"
-
-        # 4. Download to ~/summon-bot/uploads/
-        import os
-        upload_dir = os.path.expanduser("~/summon-bot/uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-        local_path = os.path.join(upload_dir, f"upload_{char_id}_{file_type}")
-        # Remove old file if exists
-        if os.path.exists(local_path):
-            os.remove(local_path)
-        try:
-            if file_type == "photo":
-                tg_file = await context.bot.get_file(reply.photo[-1].file_id)
-            elif file_type == "video":
-                tg_file = await context.bot.get_file(reply.video.file_id)
-            elif file_type == "animation":
-                tg_file = await context.bot.get_file(reply.animation.file_id)
-            else:
-                return await update.message.reply_text("❌ Unsupported media type!")
-
-            await tg_file.download_to_drive(local_path)
-        except Exception as e:
-            return await update.message.reply_text(f"❌ Download failed: {e}")
-
-        # 5. Store pending
-        upload_id = new_upload_id()
-        PENDING_UPLOADS[upload_id] = {
-            "file_id": file_id,
-            "file_type": file_type,
-            "char_id": char_id,
-            "char_name": char_name,
-            "anime": anime_name,
-            "rarity": rarity,
-            "local_path": local_path,
-        }
-
-        # 6. Forward to DB channel
-        uploader = update.effective_user
-        uploader_mention = f"<a href='tg://user?id={uploader.id}'>{uploader.first_name}</a>"
-
-        caption_text = (
-            f"📝 <b>New Character Added!</b>\n\n"
-            f"🆔 <b>ID:</b> <code>{char_id}</code>\n"
-            f"<blockquote>🎌 <b>Anime:</b> {anime_name}\n"
-            f"👤 <b>Name:</b> {char_name}\n"
-            f"✨ <b>Rarity:</b> {rarity}\n"
-            f"📂 <b>Type:</b> {file_type.upper()}</blockquote>\n"
-            f"👑 <b>Uploaded By:</b> {uploader_mention}"
+        cursor.execute(
+            "INSERT INTO characters (id, name, anime, rarity, image_url) VALUES (?, ?, ?, ?, ?)",
+            (char_id, char_name, anime_name, rarity, image_url),
         )
+        conn.commit()
+    finally:
+        conn.close()
 
-        if file_type == "photo":
-            await context.bot.send_photo(chat_id=DB_CHANNEL_ID, photo=file_id, caption=caption_text, parse_mode="HTML")
-        elif file_type == "video":
-            await context.bot.send_video(chat_id=DB_CHANNEL_ID, video=file_id, caption=caption_text, parse_mode="HTML")
-        elif file_type == "animation":
-            await context.bot.send_animation(chat_id=DB_CHANNEL_ID, animation=file_id, caption=caption_text, parse_mode="HTML")
-
-    except Exception as e:
-        if conn: conn.close()
-        if local_path and Path(local_path).exists():
-            Path(local_path).unlink(missing_ok=True)
-        return await update.message.reply_text(f"❌ Database/Channel Error: {e}")
-
-    # 7. Save to DB (file_id as backup, no URL yet)
-    db_file_value = f"{file_type}_{file_id}"
-    cursor.execute(
-        """INSERT OR REPLACE INTO characters
-           (id, name, anime, rarity, msg_id, img_url, img_url2)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (char_id, char_name, anime_name, rarity, db_file_value, None, None)
+    caption = (
+        f"📝 <b>New Character Added</b>\n\n"
+        f"🆔 <code>{char_id}</code>\n"
+        f"🎌 {anime_name}\n👤 {char_name}\n✨ {rarity}\n"
+        "🌐 Verified external image URL"
     )
-    conn.commit()
-    conn.close()
-
-    # 8. Show buttons
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📤 Catbox", callback_data=f"up_cb|{upload_id}"),
-            InlineKeyboardButton("📤 ImgBB", callback_data=f"up_ib|{upload_id}"),
-        ],
-        [
-            InlineKeyboardButton("⏭ Skip (file_id only)", callback_data=f"up_skip|{upload_id}"),
-        ],
-    ])
-
-    await update.message.reply_text(
-        f"📝 <b>Character Saved (file_id backup)!</b>\n\n"
-        f"🆔 <b>ID:</b> <code>{char_id}</code>\n"
-        f"👤 <b>Name:</b> {char_name}\n"
-        f"📺 <b>Anime:</b> {anime_name}\n"
-        f"✨ <b>Rarity:</b> {rarity}\n"
-        f"📂 <b>Type:</b> {file_type.upper()}\n"
-        f"📁 <b>Backup:</b> file_id ✅\n\n"
-        f"<b>Upload to a web host for in-app display?</b>",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
+    await send_character_media(context.bot, update.effective_chat.id, image_url, caption)
 
 # ==========================================
 # 🔄 UPDATED: /update COMMAND WITH WEB HOSTS
 # ==========================================
 async def update_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    # 🎯 Sudo Privilege Check
-    if not is_sudo(user_id):
+    """Update character metadata or its approved external image URL."""
+    if not is_sudo(update.effective_user.id):
         return await update.message.reply_text("❌ You do not have Sudo privileges!")
-
-    # ഒട്ടും ആർഗ്യുമെന്റ്സ് ഇല്ലെങ്കിൽ ഹെൽപ്പ് മെസ്സേജ് കാണിക്കുന്നു
-    if len(context.args) < 1:
+    if len(context.args) < 3:
         return await update.message.reply_text(
-            "❌ <b>Invalid Format!</b>\n\n"
-            "💡 <b>Usage Examples:</b>\n"
-            "• <code>/update 678 name Raiden-shogun</code>\n"
-            "• <code>/update 478 rarity 18</code>\n"
-            "• <code>/update 748 anime Genshin-Impact</code>\n"
-            "• <code>/update 587 image</code> (Reply to an image/video/gif)",
-            parse_mode="HTML"
+            "💡 Usage: <code>/update &lt;id&gt; image &lt;Catbox-or-ImgBB-HTTPS-URL&gt;</code>\n"
+            "Other fields: <code>name</code>, <code>anime</code>, <code>rarity</code>.",
+            parse_mode=ParseMode.HTML,
         )
 
-    # ആട്ടോമാറ്റിക്കായി ഐഡി പാഡ് ചെയ്യുന്നു (e.g., '1' becomes '01')
     char_id = context.args[0].zfill(2)
-    field_to_update = context.args[1].lower() if len(context.args) > 1 else "image"
+    field = context.args[1].lower()
+    raw_value = " ".join(context.args[2:]).strip()
+    if field not in {"name", "anime", "rarity", "image"}:
+        return await update.message.reply_text("❌ Invalid field. Use name, anime, rarity, or image.")
+
+    if field == "image":
+        try:
+            value = require_character_image_url(raw_value)
+        except ValueError as exc:
+            return await update.message.reply_text(f"❌ {exc}")
+        column = "image_url"
+    elif field == "rarity":
+        try:
+            value = RARITY_DISPLAY[int(raw_value)]
+        except (ValueError, KeyError):
+            return await update.message.reply_text("❌ Rarity must be an ID from 1 to 18.")
+        column = "rarity"
+    else:
+        value = raw_value.replace("-", " ").title()
+        column = field
 
     conn = db_connect(DB_NAME)
-    cursor = conn.cursor()
-
-    # ഡാറ്റാബേസിൽ ഈ ക്യാരക്ടർ ഉണ്ടോ എന്ന് നോക്കുന്നു
-    cursor.execute("SELECT name, anime, rarity, msg_id FROM characters WHERE id = ?", (char_id,))
-    existing_char = cursor.fetchone()
-
-    if not existing_char:
-        conn.close()
-        return await update.message.reply_text(f"❌ <b>Character with ID {char_id} not found!</b>", parse_mode="HTML")
-
-    current_name, current_anime, current_rarity, current_msg_id = existing_char
-
-    updated_value = ""
-    db_field = ""
-    local_path = None
-
-    # 1️⃣ IMAGE/MEDIA UPDATE HANDLING (നിന്റെ അപ്‌ലോഡ് സിസ്റ്റവുമായി കണക്ട് ചെയ്തത്)
-    if field_to_update in ["image", "media"]:
-        reply = update.message.reply_to_message
-        if not reply:
-            conn.close()
-            return await update.message.reply_text("❌ <b>Error: Please reply to an image, video, or GIF to update!</b>", parse_mode="HTML")
-
-        file_id, file_type = None, None
-        if reply.photo:
-            file_id = reply.photo[-1].file_id
-            file_type = "photo"
-        elif reply.video:
-            file_id = reply.video.file_id
-            file_type = "video"
-        elif reply.animation:
-            file_id = reply.animation.file_id
-            file_type = "animation"
-        else:
-            conn.close()
-            return await update.message.reply_text("❌ Unsupported media type! Please use Photo, Video, or GIF.")
-
-        current_msg_id = f"{file_type}_{file_id}"
-        db_field = "msg_id"
-        updated_value = f"New {file_type.upper()} linked!"
-
-        # ഫയൽ ലോക്കലായി ~/summon-bot/uploads/-ലേക്ക് ഡൗൺലോഡ് ചെയ്യുന്നു
-        upload_dir = os.path.expanduser("~/summon-bot/uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-        local_path = os.path.join(upload_dir, f"upload_{char_id}_{file_type}")
-        
-        if os.path.exists(local_path):
-            os.remove(local_path)
-            
-        try:
-            tg_file = await context.bot.get_file(file_id)
-            await tg_file.download_to_drive(local_path)
-        except Exception as e:
-            conn.close()
-            return await update.message.reply_text(f"❌ Download failed: {e}")
-
-        # അപ്‌ലോഡ് കോൾബാക്കിന് വേണ്ടി PENDING_UPLOADS-ലേക്ക് വിവരങ്ങൾ മാറ്റുന്നു
-        upload_id = new_upload_id()
-        PENDING_UPLOADS[upload_id] = {
-            "file_id": file_id,
-            "file_type": file_type,
-            "char_id": char_id,
-            "char_name": current_name,
-            "anime": current_anime,
-            "rarity": current_rarity,
-            "local_path": local_path,
-        }
-
-    # 2️⃣ NAME UPDATE HANDLING
-    elif field_to_update == "name":
-        if len(context.args) < 3:
-            conn.close()
-            return await update.message.reply_text("❌ Please provide the new name! Example: <code>/update 678 name Son-goku</code>", parse_mode="HTML")
-        new_name = " ".join(context.args[2:]).replace("-", " ").title()
-        current_name = new_name
-        db_field = "name"
-        updated_value = new_name
-
-    # 3️⃣ ANIME UPDATE HANDLING
-    elif field_to_update == "anime":
-        if len(context.args) < 3:
-            conn.close()
-            return await update.message.reply_text("❌ Please provide the new anime name! Example: <code>/update 748 anime Dragon-Ball</code>", parse_mode="HTML")
-        new_anime = " ".join(context.args[2:]).replace("-", " ").title()
-        current_anime = new_anime
-        db_field = "anime"
-        updated_value = new_anime
-
-    # 4️⃣ RARITY UPDATE HANDLING
-    elif field_to_update == "rarity":
-        if len(context.args) < 3:
-            conn.close()
-            return await update.message.reply_text("❌ Please provide the new rarity ID! Example: <code>/update 478 rarity 18</code>", parse_mode="HTML")
-        try:
-            rarity_id = int(context.args[2])
-            if rarity_id not in RARITY_DISPLAY:
-                conn.close()
-                return await update.message.reply_text("❌ Invalid Rarity ID! Use a number from 1 to 18.")
-            new_rarity = RARITY_DISPLAY[rarity_id]
-            current_rarity = new_rarity
-            db_field = "rarity"
-            updated_value = new_rarity
-        except ValueError:
-            conn.close()
-            return await update.message.reply_text("❌ Rarity must be a valid number!")
-    else:
-        conn.close()
-        return await update.message.reply_text("❌ Invalid field! You can only update <code>name</code>, <code>anime</code>, <code>rarity</code>, or <code>image</code>.", parse_mode="HTML")
-
-    # ഡാറ്റാബേസ് അപ്‌ഡേറ്റ് ചെയ്യുന്നു (ഇമേജ് ആണെങ്കിൽ img_url ലിങ്കുകൾ തൽക്കാലം ക്ലിയർ ചെയ്യുന്നു, പുതിയ അപ്‌ലോഡ് വരുന്നത് കൊണ്ട്)
-    if db_field == "msg_id":
-        cursor.execute(
-            "UPDATE characters SET msg_id = ?, img_url = NULL, img_url2 = NULL WHERE id = ?",
-            (current_msg_id, char_id)
-        )
-    else:
-        cursor.execute(f"UPDATE characters SET {db_field} = ? WHERE id = ?", (updated_value, char_id))
-        
-    conn.commit()
-    conn.close()
-
-    # ഡാറ്റാബേസ് ചാനലിലേക്ക് പുതിയ ലോഗ് മെസ്സേജ് അയക്കുന്നു
-    file_type = "photo"
-    file_id = current_msg_id
-    if "_" in str(current_msg_id):
-        file_type, file_id = str(current_msg_id).split("_", 1)
-
-    uploader_mention = f"<a href='tg://user?id={update.effective_user.id}'>{update.effective_user.first_name}</a>"
-    caption_text = (
-        f"🔄 <b>Character Updated!</b>\n\n"
-        f"🆔 <b>ID:</b> <code>{char_id}</code>\n"
-        f"<blockquote>🎌 <b>Anime:</b> {current_anime}\n"
-        f"👤 <b>Name:</b> {current_name}\n"
-        f"✨ <b>Rarity:</b> {current_rarity}\n"
-        f"📢 <b>Updated Field:</b> {field_to_update.upper()}</blockquote>\n"
-        f"👑 <b>Updated By:</b> {uploader_mention}"
-    )
-
     try:
-        if file_type == "photo":
-            await context.bot.send_photo(chat_id=DB_CHANNEL_ID, photo=file_id, caption=caption_text, parse_mode="HTML")
-        elif file_type == "video":
-            await context.bot.send_video(chat_id=DB_CHANNEL_ID, video=file_id, caption=caption_text, parse_mode="HTML")
-        elif file_type == "animation":
-            await context.bot.send_animation(chat_id=DB_CHANNEL_ID, animation=file_id, caption=caption_text, parse_mode="HTML")
-    except Exception as e:
-        print(f"Error sending update to log channel: {e}")
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, anime, rarity FROM characters WHERE id = ?", (char_id,))
+        if not cursor.fetchone():
+            return await update.message.reply_text(f"❌ Character with ID {char_id} was not found.")
+        cursor.execute(f"UPDATE characters SET {column} = ? WHERE id = ?", (value, char_id))
+        conn.commit()
+    finally:
+        conn.close()
 
-    # ഇമേജ് അപ്‌ഡേറ്റ് ആണെങ്കിൽ വെബ് ഹോസ്റ്റ് ബട്ടണുകൾ കാണിക്കും (നിന്റെ അപ്‌ലോഡ് കോൾബാക്ക് ഇത് തനിയെ ഹാൻഡിൽ ചെയ്യും)
-    if db_field == "msg_id":
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("📤 Catbox", callback_data=f"up_cb|{upload_id}"),
-                InlineKeyboardButton("📤 ImgBB", callback_data=f"up_ib|{upload_id}"),
-            ],
-            [
-                InlineKeyboardButton("⏭ Skip (file_id only)", callback_data=f"up_skip|{upload_id}"),
-            ],
-        ])
-        return await update.message.reply_text(
-            f"🔄 <b>Character Saved (file_id backup)!</b>\n\n"
-            f"🆔 <b>ID:</b> <code>{char_id}</code>\n"
-            f"👤 <b>Name:</b> {current_name}\n"
-            f"📂 <b>Type:</b> {file_type.upper()}\n"
-            f"📁 <b>Backup:</b> file_id ✅\n\n"
-            f"<b>Upload this new media to a web host?</b>",
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-
-    # ടെക്സ്റ്റ് ഫീൽഡ് അപ്‌ഡേറ്റ് മെസ്സേജ്
     await update.message.reply_text(
-        f"✅ <b>Character Updated Successfully!</b>\n\n"
-        f"🆔 <b>ID:</b> <code>{char_id}</code>\n"
-        f"⚙️ <b>Changed:</b> {field_to_update.title()} -> <code>{updated_value}</code>",
-        parse_mode="HTML"
+        f"✅ <b>Character Updated</b>\n\n🆔 <code>{char_id}</code>\n"
+        f"⚙️ {field.title()}: <code>{value}</code>",
+        parse_mode=ParseMode.HTML,
     )
 
 # 3️⃣ DELETE CHARACTER (/deletechar)
@@ -1677,12 +1085,12 @@ async def gen_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # If you have character media
     try:
-        msg_id = get_character_media(char_id)  # Replace with your own function if needed
+        image_url = get_character_media(char_id)  # Replace with your own function if needed
 
         await send_character_media(
             context.bot,
             update.effective_chat.id,
-            msg_id,
+            image_url,
             text
         )
     except Exception:
@@ -1739,7 +1147,7 @@ async def redeem_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 🎴 get character info
     cursor.execute("""
-        SELECT name, anime, rarity, msg_id
+        SELECT name, anime, rarity, image_url
         FROM characters
         WHERE id=?
     """, (char_id,))
@@ -1751,7 +1159,7 @@ async def redeem_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 🎉 response
     if char:
-        name, anime, rarity, msg_id = char
+        name, anime, rarity, image_url = char
 
         text = (
             f"🎉 <b>Redeem successfull!</b>\n\n"
@@ -1768,7 +1176,7 @@ async def redeem_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_character_media(
                 context.bot,
                 update.effective_chat.id,
-                msg_id,
+                image_url,
                 text
             )
         except:
@@ -1821,6 +1229,4 @@ async def save_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ensure_group(chat.id, chat.title)
     await update.message.reply_text(f"✅ 𝖦𝗋𝗈𝗎𝗉 𝗋𝖾𝗀𝗂𝗌𝗍𝖾𝗋𝖾𝖽: {chat.title}")
-
-
 

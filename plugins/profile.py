@@ -10,8 +10,9 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
+from config import DB_NAME
 
-DB = "summon.db"
+DB = DB_NAME
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ==================== AUTOMATIC FONT DOWNLOADER ====================
@@ -513,4 +514,3 @@ async def profile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def register(app):
     app.add_handler(CommandHandler("profile", profile_cmd))
-

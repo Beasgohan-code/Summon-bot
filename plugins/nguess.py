@@ -13,6 +13,7 @@ from telegram.constants import ChatAction, ParseMode
 from config import (
     DB_NAME, GUESS_TIMEOUT, REWARD_COINS, REACTIONS, BOT_TOKEN, DB_CHANNEL_ID,
 )
+from media_urls import is_allowed_character_image_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ async def react_to_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, mes
 
 def get_random_character():
     try:
-        rows = db_query("SELECT id, name, anime, rarity, msg_id FROM characters", fetch="all")
+        rows = db_query("SELECT id, name, anime, rarity, image_url FROM characters", fetch="all")
         if not rows:
             return None
         return dict(random.choice(rows))
@@ -110,7 +111,7 @@ def add_coins(user_id: int, amount: int):
 
 async def send_character(update: Update, context: ContextTypes.DEFAULT_TYPE, character: dict):
     """Send the character image with the guess prompt as its caption (single message)."""
-    msg_id_value = str(character.get("msg_id", "")).strip()
+    image_url = str(character.get("image_url", "")).strip()
 
     # Caption shown UNDER the photo (in a blockquote for visual separation)
     caption = (
@@ -121,40 +122,17 @@ async def send_character(update: Update, context: ContextTypes.DEFAULT_TYPE, cha
     )
 
     sent_image = False
-    if msg_id_value and "_" in msg_id_value:
-        file_type, file_id = msg_id_value.split("_", 1)
+    if is_allowed_character_image_url(image_url):
         try:
-            if file_type == "photo":
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=file_id,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                )
-            elif file_type == "video":
-                await context.bot.send_video(
-                    chat_id=update.effective_chat.id,
-                    video=file_id,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                )
-            elif file_type == "animation":
-                await context.bot.send_animation(
-                    chat_id=update.effective_chat.id,
-                    animation=file_id,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                )
-            else:
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=file_id,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                )
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=image_url,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
             sent_image = True
-        except Exception as e:
-            LOGGER.warning(f"send_media failed for {file_type}: {e}")
+        except Exception as exc:
+            LOGGER.warning("send_media failed for approved image URL: %s", exc)
 
     if not sent_image:
         # Fallback: text-only card (no image, but still show the prompt)
@@ -344,4 +322,3 @@ def register(application):
         ),
         group=-1,
     )
-

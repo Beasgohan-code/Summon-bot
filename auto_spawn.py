@@ -97,7 +97,7 @@ async def _post_spawn(context, chat_id, char, source: str = "manual"):
         name = char[1]
         anime = char[2]
         rarity = char[3]
-        msg_id = char[4]
+        image_url = char[4]
     except IndexError:
         logger.error(f"[{source}] Database row does not have 5 columns! Row data: {char}")
         return
@@ -132,7 +132,7 @@ async def _post_spawn(context, chat_id, char, source: str = "manual"):
             await media_sender(
                 bot=context.bot,
                 chat_id=chat_id,
-                db_msg_id=msg_id,
+                image_url=image_url,
                 caption=text,
                 reply_markup=keyboard,
             )

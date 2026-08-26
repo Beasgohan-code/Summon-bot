@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 from telegram.constants import ParseMode
 
 from config import DB_NAME, OWNER_ID, HCLAIM_COOLDOWN_HOURS, SUPPORT_GROUP_ID, GROUP_LINK
-from commands_user import check_ban
+from commands_user import check_ban, send_character_media
 
 DB = DB_NAME
 
@@ -136,7 +136,7 @@ def get_random_character_by_rarity_id(rarity_id: int):
     
     # LIKE ഉപയോഗിച്ച് Case-Insensitive ആക്കുന്നു (ചെറിയ അക്ഷരവും വലിയ അക്ഷരവും ഒരുപോലെ നോക്കും)
     char = conn.execute("""
-        SELECT id, name, anime, rarity, msg_id 
+        SELECT id, name, anime, rarity, image_url
         FROM characters 
         WHERE rarity LIKE ? 
         ORDER BY RANDOM() LIMIT 1
@@ -440,7 +440,7 @@ async def hclaim_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 🔄 FALLBACK LOGIC: സെലക്ട് ചെയ്ത റാരിറ്റിയിൽ കാരക്ടർ ഇല്ലെങ്കിൽ ഡാറ്റാബേസിലുള്ള ഏതെങ്കിലും ഒന്നിനെ എടുക്കും!
     if not char:
         char = cur.execute("""
-            SELECT id, name, anime, rarity, msg_id 
+            SELECT id, name, anime, rarity, image_url
             FROM characters 
             ORDER BY RANDOM() LIMIT 1
         """).fetchone()
@@ -449,7 +449,7 @@ async def hclaim_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return await update.message.reply_text("❌ ഡാറ്റാബേസിൽ ഒരു കാരക്ടർ പോലും ഇല്ല അളിയാ! ആദ്യം കുറച്ചെണ്ണം ആഡ് ചെയ്യ്.")
 
-    char_id, name, anime, rarity, db_file_value = char
+    char_id, name, anime, rarity, image_url = char
 
     # DB UPDATE
     now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -477,28 +477,7 @@ async def hclaim_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✨ Character successfully added to your /harem!"
     )
 
-    try:
-        db_val = str(db_file_value).strip()
-        if db_val.startswith("http://") or db_val.startswith("https://"):
-            if any(ext in db_val.lower() for ext in [".mp4", ".mkv", ".mov"]):
-                await update.message.reply_video(video=db_val, caption=text, parse_mode=ParseMode.HTML)
-            elif ".gif" in db_val.lower():
-                await update.message.reply_animation(animation=db_val, caption=text, parse_mode=ParseMode.HTML)
-            else:
-                await update.message.reply_photo(photo=db_val, caption=text, parse_mode=ParseMode.HTML)
-        else:
-            if "_" in db_val:
-                file_type, file_id = db_val.split("_", 1)
-                if file_type == "video":
-                    await update.message.reply_video(video=file_id, caption=text, parse_mode=ParseMode.HTML)
-                elif file_type == "animation":
-                    await update.message.reply_animation(animation=file_id, caption=text, parse_mode=ParseMode.HTML)
-                else:
-                    await update.message.reply_photo(photo=file_id, caption=text, parse_mode=ParseMode.HTML)
-            else:
-                await update.message.reply_photo(photo=db_val, caption=text, parse_mode=ParseMode.HTML)
-    except Exception:
-        await update.message.reply_text(text=text, parse_mode=ParseMode.HTML)
+    await send_character_media(context.bot, update.effective_chat.id, image_url, text)
 
 # ==================== 💣 /bomb ====================
 async def bomb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -942,4 +921,3 @@ def register(app):
     app.add_handler(CommandHandler("premium", premium_cmd))
     app.add_handler(CommandHandler("unpremium", unpremium_cmd))
     app.add_handler(CallbackQueryHandler(market_cb, pattern=r"^(mi:|m_inv|m_back)"))
-

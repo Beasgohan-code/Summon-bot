@@ -46,6 +46,7 @@ from database import (
     MARKET_POOL_SIZE, MARKET_REFRESH_PRICE, MARKET_SELL_BACK_PERCENT,
 )
 from font import stylize_block, FONT_MAPS
+from media_urls import is_allowed_character_image_url
 
 logger = logging.getLogger(__name__)
 
@@ -65,25 +66,35 @@ def f(text: str, user_id: int = None) -> str:
     return stylize_block(text, font)
 
 
-async def send_character_media(bot, chat_id, db_msg_id, caption, reply_markup=None):
-    """Send character media: detects photo/video/animation from db_msg_id format."""
-    db_val = str(db_msg_id).strip() if db_msg_id else ""
-    if not db_val:
-        return await bot.send_message(chat_id=chat_id, text=caption, reply_markup=reply_markup, parse_mode="HTML")
-    if "_" in db_val:
-        file_type, file_id = db_val.split("_", 1)
-    else:
-        file_type, file_id = "photo", db_val
+async def send_character_media(bot, chat_id, image_url, caption, reply_markup=None):
+    """Send an approved external character image or a text fallback.
+
+    Character media is intentionally URL-only. Telegram file IDs, typed media
+    prefixes, and arbitrary hosts are never sent from this path.
+    """
+    if not is_allowed_character_image_url(image_url):
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=caption,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
     try:
-        if file_type == "video":
-            return await bot.send_video(chat_id=chat_id, video=file_id, caption=caption, reply_markup=reply_markup, parse_mode="HTML")
-        elif file_type == "animation":
-            return await bot.send_animation(chat_id=chat_id, animation=file_id, caption=caption, reply_markup=reply_markup, parse_mode="HTML")
-        else:
-            return await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption, reply_markup=reply_markup, parse_mode="HTML")
-    except Exception as e:
-        logger.warning(f"send_character_media failed: {e}")
-        return await bot.send_message(chat_id=chat_id, text=caption, reply_markup=reply_markup, parse_mode="HTML")
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=image_url,
+            caption=caption,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.warning("send_character_media failed for approved image URL: %s", exc)
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=caption,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
 
        
 # BAN CHECK
@@ -433,7 +444,7 @@ async def view_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         check_and_register_user(user.id, user.username, user.first_name)
     
 
-    db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
+    db_file = DB_NAME
     
     conn = db_connect(db_file)
     cursor = conn.cursor()
@@ -500,7 +511,7 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
             check_and_register_user(user_id, user.username)
 
     # DB_NAME ഗ്ലോബൽ വേരിയബിൾ ആണെന്ന് ഉറപ്പുവരുത്തുക
-    db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
+    db_file = DB_NAME
 
     conn = db_connect(db_file)
     cursor = conn.cursor()
@@ -607,7 +618,7 @@ async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             check_and_register_user(user_id, user.username)
 
     # DB_NAME ഗ്ലോബൽ വേരിയബിൾ ആണെന്ന് ഉറപ്പുവരുത്തുക
-    db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
+    db_file = DB_NAME
     
     conn = db_connect(db_file)
     cursor = conn.cursor()
@@ -846,7 +857,7 @@ async def send_collection_page(update, context, user_id, page):
     # ഫേവറിറ്റ് ക്യാരക്ടർ മീഡിയ ഐഡി എടുക്കുന്നു
     fav_media_id = None
     if fav_char_id and not anime_filter:
-        cursor.execute("SELECT msg_id FROM characters WHERE id = ?", (fav_char_id,))
+        cursor.execute("SELECT image_url FROM characters WHERE id = ?", (fav_char_id,))
         fav_char = cursor.fetchone()
         if fav_char:
             fav_media_id = fav_char[0]
@@ -1028,14 +1039,14 @@ async def check_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     char_id = context.args[0]
     conn = db_connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT name, anime, rarity, msg_id FROM characters WHERE id=?", (char_id,))
+    cursor.execute("SELECT name, anime, rarity, image_url FROM characters WHERE id=?", (char_id,))
     char = cursor.fetchone()
     conn.close()                                                                                                          
     
     if not char: 
         return await update.message.reply_text("❌ Character not found.")
     
-    name, anime, rarity, msg_id = char
+    name, anime, rarity, image_url = char
     
     # 👑 നിന്റെ കൃത്യമായ ഡിസൈൻ ഫോർമാറ്റ് (Info blockquote-ൽ ഒതുക്കി നിർത്തിയിരിക്കുന്നു)
     text = (
@@ -1051,7 +1062,7 @@ async def check_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("👥 View Owners", callback_data=f"owners_{char_id}")]])
     
     try:
-        await send_character_media(context.bot, update.effective_chat.id, msg_id, text, reply_markup=keyboard)
+        await send_character_media(context.bot, update.effective_chat.id, image_url, text, reply_markup=keyboard)
     except Exception:
         await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -1357,7 +1368,7 @@ async def favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor = conn.cursor()
     
     # 1. ക്യാരക്ടർ ഡാറ്റാബേസിൽ ഉണ്ടോ എന്നും അതിന്റെ വിവരങ്ങളും മീഡിയയും എടുക്കുന്നു
-    cursor.execute("SELECT name, anime, msg_id FROM characters WHERE id=?", (char_id,))
+    cursor.execute("SELECT name, anime, image_url FROM characters WHERE id=?", (char_id,))
     char_data = cursor.fetchone()
     
     if not char_data:
@@ -1410,7 +1421,7 @@ async def give_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor = conn.cursor()
 
     # 1. Database-il ninnu character details edukkunnu
-    cursor.execute("SELECT name, anime, msg_id FROM characters WHERE id=?", (char_id,))
+    cursor.execute("SELECT name, anime, image_url FROM characters WHERE id=?", (char_id,))
     char_data = cursor.fetchone()
 
     if not char_data:
@@ -1464,7 +1475,7 @@ async def gift_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor = conn.cursor()
 
     # 1. Character database-il undo enn nokkunnu
-    cursor.execute("SELECT name, anime, msg_id FROM characters WHERE id=?", (char_id,))
+    cursor.execute("SELECT name, anime, image_url FROM characters WHERE id=?", (char_id,))
     char_data = cursor.fetchone()
 
     if not char_data:
@@ -1731,13 +1742,13 @@ async def rarity_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     rarity = query.data.replace("rarity_", "")
-    db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
+    db_file = DB_NAME
 
     conn = db_connect(db_file)
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, name, anime, rarity, msg_id
+        SELECT id, name, anime, rarity, image_url
         FROM characters
         WHERE rarity=?
         ORDER BY RANDOM()
@@ -1750,7 +1761,7 @@ async def rarity_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not char:
         return await query.answer("❌ No character found for this rarity!", show_alert=True)
 
-    char_id, name, anime, rarity, msg_id = char
+    char_id, name, anime, rarity, image_url = char
     price_dict = PRICE if 'PRICE' in globals() else {}
     price = price_dict.get(rarity, 15000)
 
@@ -1786,7 +1797,7 @@ async def rarity_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_character_media(
             bot=context.bot,
             chat_id=update.effective_chat.id,
-            db_msg_id=msg_id,
+            image_url=image_url,
             caption=text,
             reply_markup=InlineKeyboardMarkup(buttons))
     else:
@@ -1824,7 +1835,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # വീണ്ടും മറ്റൊരു ക്യാരക്ടറിനെ റാൻഡം ആയി എടുക്കുന്നു
     cursor.execute("""
-        SELECT id, name, anime, rarity, msg_id
+        SELECT id, name, anime, rarity, image_url
         FROM characters
         WHERE rarity=?
         ORDER BY RANDOM()
@@ -1838,7 +1849,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not char:
         return await query.answer("❌ No character found!", show_alert=True)
 
-    char_id, name, anime, rarity, msg_id = char
+    char_id, name, anime, rarity, image_url = char
     price_dict = PRICE if 'PRICE' in globals() else {}
     price = price_dict.get(rarity, 15000)
 
@@ -1871,7 +1882,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             bot=context.bot,
             chat_id=update.effective_chat.id,
-            db_msg_id=msg_id,
+            image_url=image_url,
             caption=text,
             reply_markup=InlineKeyboardMarkup(buttons))
     else:
@@ -1899,7 +1910,7 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.answer("❌ Invalid request", show_alert=True)
 
     user = query.from_user
-    db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
+    db_file = DB_NAME
 
     conn = db_connect(db_file)
     cursor = conn.cursor()
@@ -2003,7 +2014,7 @@ async def top_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if data == "top_back":
         return await top_back_handler(update, context)
 
-    db_file = DB_NAME if 'DB_NAME' in globals() else "summon.db"
+    db_file = DB_NAME
     conn = db_connect(db_file)
     cursor = conn.cursor()
 
@@ -2266,7 +2277,7 @@ async def cshop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pool = get_market_pool()
     if not pool:
         clear_market_pool()
-        all_chars = fetch_all("SELECT id, name, anime, rarity, msg_id FROM characters ORDER BY RANDOM() LIMIT ?", (MARKET_POOL_SIZE,))
+        all_chars = fetch_all("SELECT id, name, anime, rarity, image_url FROM characters ORDER BY RANDOM() LIMIT ?", (MARKET_POOL_SIZE,))
         for c in all_chars:
             add_to_market_pool(c[0])
         pool = all_chars
@@ -2274,7 +2285,7 @@ async def cshop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = get_balance(user_id)
     text = f"🛒 <b>MARKET</b>\n💰 <b>Balance:</b> <code>{bal:,}</code> coins\n\n<blockquote>"
     buttons = []
-    for char_id, name, anime, rarity, msg_id in pool:
+    for char_id, name, anime, rarity, image_url in pool:
         price = int(PRICE.get(rarity, 15000) * 1.2)
         text += f"• {name} ({rarity}) — <code>{price:,}</code>\n"
         buttons.append([InlineKeyboardButton(f"🛒 Buy {name[:15]}", callback_data=f"market_buy_{char_id}_{price}")])
@@ -2296,7 +2307,7 @@ async def cshop_callback(update, context):
         if not remove_balance(user_id, MARKET_REFRESH_PRICE):
             return await q.answer("❌ You don't have enough coins to refresh!", show_alert=True)
         clear_market_pool()
-        all_chars = fetch_all("SELECT id, name, anime, rarity, msg_id FROM characters ORDER BY RANDOM() LIMIT ?", (MARKET_POOL_SIZE,))
+        all_chars = fetch_all("SELECT id, name, anime, rarity, image_url FROM characters ORDER BY RANDOM() LIMIT ?", (MARKET_POOL_SIZE,))
         for c in all_chars:
             add_to_market_pool(c[0])
         await q.answer("✅ Market Refreshed!")
@@ -2308,7 +2319,7 @@ async def cshop_callback(update, context):
             return await q.answer("❌ Your harem is empty! Nothing to sell.", show_alert=True)
         text = "💰 <b>SELL CHARACTERS</b>\n\n"
         buttons = []
-        for cid, name, anime, rarity, msg_id, count in rows[:15]:
+        for cid, name, anime, rarity, image_url, count in rows[:15]:
             price = int(PRICE.get(rarity, 15000) * MARKET_SELL_BACK_PERCENT / 100)
             text += f"• {name} — <code>{price:,}</code> coins\n"
             buttons.append([InlineKeyboardButton(f"💰 Sell {name[:15]}", callback_data=f"market_sell_{cid}")])
@@ -2380,37 +2391,13 @@ async def sell_command(update, context):
         f"✨ Successfully removed from your /harem."
     )
     
-    # 🖼️ ഇമേജ് കാണിക്കാനുള്ള ലോജിക് (char[4]-ൽ ആണ് സാധാരണ msg_id/image url ഉണ്ടാകാറുള്ളത്)
-    try:
-        db_val = str(char[4]).strip() if len(char) > 4 and char[4] else None
-        
-        if db_val:
-            if db_val.startswith("http://") or db_val.startswith("https://"):
-                if any(ext in db_val.lower() for ext in [".mp4", ".mkv", ".mov"]):
-                    await update.message.reply_video(video=db_val, caption=caption_text, parse_mode=ParseMode.HTML)
-                elif ".gif" in db_val.lower():
-                    await update.message.reply_animation(animation=db_val, caption=caption_text, parse_mode=ParseMode.HTML)
-                else:
-                    await update.message.reply_photo(photo=db_val, caption=caption_text, parse_mode=ParseMode.HTML)
-            else:
-                if "_" in db_val:
-                    file_type, file_id = db_val.split("_", 1)
-                    if file_type == "video":
-                        await update.message.reply_video(video=file_id, caption=caption_text, parse_mode=ParseMode.HTML)
-                    elif file_type == "animation":
-                        await update.message.reply_animation(animation=file_id, caption=caption_text, parse_mode=ParseMode.HTML)
-                    else:
-                        await update.message.reply_photo(photo=file_id, caption=caption_text, parse_mode=ParseMode.HTML)
-                else:
-                    await update.message.reply_photo(photo=db_val, caption=caption_text, parse_mode=ParseMode.HTML)
-        else:
-            # ഫോട്ടോ ലിങ്ക് ഇല്ലെങ്കിൽ വെറും ടെക്സ്റ്റ് അയക്കും
-            await update.message.reply_text(caption_text, parse_mode=ParseMode.HTML)
-            
-    except Exception:
-        # എന്തെങ്കിലും കാരണത്താൽ ഇമേജ് അയക്കാൻ എറർ അടിച്ചാൽ ടെക്സ്റ്റ് മെസ്സേജ് ആയി അയക്കും
-        await update.message.reply_text(caption_text, parse_mode=ParseMode.HTML)
-
+    image_url = char[4] if len(char) > 4 else None
+    await send_character_media(
+        context.bot,
+        update.effective_chat.id,
+        image_url,
+        caption_text,
+    )
 
 # ==========================
 # /PROFILE
@@ -2674,4 +2661,3 @@ async def font_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(text, parse_mode=ParseMode.HTML)
     except Exception:
         await query.message.reply_text(text, parse_mode=ParseMode.HTML)
-

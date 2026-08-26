@@ -1,5 +1,4 @@
 from storage import connect as db_connect
-import os
 # ~/summon-bot/commands_hstats.py
 # /hstats and /me — uses Telegram native <blockquote expandable> for collapse.
 
@@ -8,10 +7,11 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler
+from config import DB_NAME
 
 logger = logging.getLogger(__name__)
 
-DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "summon.db")
+DB = DB_NAME
 
 
 def progress_bar(pct, length=10):

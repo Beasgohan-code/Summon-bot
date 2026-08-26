@@ -23,7 +23,7 @@ async def trigger_spawn_auto(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     if not char: 
         return
         
-    char_id, name, anime, rarity, msg_id = char
+    char_id, name, anime, rarity, image_url = char
 
     context.chat_data["active_spawn"] = {
         "id": char_id,
@@ -40,7 +40,7 @@ async def trigger_spawn_auto(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     )
 
     try:
-        await send_character_media(context.bot, chat_id, msg_id, text)
+        await send_character_media(context.bot, chat_id, image_url, text)
     except Exception as e:
         logger.error(f"Spawn error: {e}")
         await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")

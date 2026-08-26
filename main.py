@@ -13,7 +13,7 @@ from telegram.ext import (
 )	
 # ==================== CONFIG & MODULES ====================
 from config import (
-    BOT_TOKEN, OWNER_ID, BOT_USERNAME, DB_NAME,
+    BOT_TOKEN, OWNER_ID, BOT_USERNAME, DB_NAME, DATABASE_URL,
     PRICE, HIGH_TIER, SPIN_COOLDOWN_HOURS, HCLAIM_COOLDOWN_HOURS,
     SPAM_LIMIT, DAILY_REWARD,
     ENABLE_STREAK, ENABLE_ACHIEVEMENTS, ENABLE_MARKET, ENABLE_FONT,
@@ -50,7 +50,7 @@ from commands_user import (
 # Admin commands (sudo+)
 from commands_admin import (
     ban, unban, warn, remove, delete,
-    upload_character, trigger_spawn,
+    trigger_spawn,
     checkspawn, changetime,
     change_chance, chance_list, sudo_callback_handler,
     sudolist_command, editsudo_command, addsudo_command,
@@ -60,15 +60,13 @@ from commands_admin import (
     broadcast, save_group,
 )
 
-from commands_admin import upload_callback
-
 # Owner panel
 from commands_owner import owner_panel, ownerpanel_callback, restart_bot
 
 from auto_spawn import hint_callback, auto_spawn_watcher
 
 # Inline + catch-all
-from inline_search import inline_search, collection_inline
+from inline_search import inline_search
 from catch_all import track_messages_and_save_group
 
 logger = logging.getLogger(__name__)
@@ -222,7 +220,6 @@ def register_handlers(application: Application):
     application.add_handler(CommandHandler("warn", warn))
     application.add_handler(CommandHandler("remove", remove))
     application.add_handler(CommandHandler("delete", delete))
-    application.add_handler(CommandHandler("upload", upload_character))
     application.add_handler(CommandHandler("spawn", trigger_spawn))
     application.add_handler(CommandHandler("checkspawn", checkspawn))
     application.add_handler(CommandHandler("changetime", changetime))
@@ -247,7 +244,6 @@ def register_handlers(application: Application):
     application.add_handler(CommandHandler("restart", restart_bot))
 
     # ==================== 📞 CALLBACK QUERIES ====================
-    application.add_handler(CallbackQueryHandler(upload_callback, pattern=r"^up_"))
     application.add_handler(CallbackQueryHandler(search_page_callback, pattern=r"^srch_"))
     # Help
     application.add_handler(CallbackQueryHandler(help_callback, pattern=r"^(open_help|help_)"))
@@ -291,7 +287,6 @@ def register_handlers(application: Application):
     # ==================== 🔍 INLINE QUERIES ====================
 
     application.add_handler(InlineQueryHandler(inline_search))
-    application.add_handler(InlineQueryHandler(collection_inline))
 
     # ==================== 📥 CATCH-ALL (must be last) ====================
 
@@ -327,6 +322,11 @@ def validate_config():
         raise RuntimeError("BOT_TOKEN is not configured. Set it in the environment before starting the bot.")
     if OWNER_ID <= 0:
         raise RuntimeError("OWNER_ID must be a positive Telegram user ID.")
+    if not DATABASE_URL.startswith(("postgres://", "postgresql://")):
+        raise RuntimeError(
+            "DATABASE_URL must be configured with a PostgreSQL connection URL. "
+            "SQLite runtime storage is no longer supported."
+        )
 
 
 def main():

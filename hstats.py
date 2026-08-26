@@ -3,8 +3,9 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
+from config import DB_NAME
 
-DB = "summon.db"
+DB = DB_NAME
 
 COOLDOWN_BOMB  = 6 * 3600      # 6 hours
 COOLDOWN_STEAL = 24 * 3600     # 24 hours
@@ -491,4 +492,3 @@ async def hstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register(app):
     app.add_handler(CommandHandler("hstats", hstats_cmd))
     app.add_handler(CommandHandler("me", hstats_cmd))
-

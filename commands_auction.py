@@ -1,5 +1,4 @@
 from storage import connect as db_connect
-import os
 # ============================================================
 # commands_auction.py  —  Anime Auction System v2
 # Beautified gallery UI + live-updating pinned message
@@ -19,11 +18,13 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from config import DB_NAME
+from media_urls import is_allowed_character_image_url
 
 logger = logging.getLogger(__name__)
 
 # ==================== CONFIG ====================
-DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "summon.db")
+DB = DB_NAME
 AUCTION_DURATION = 1800          # 30 min default
 MIN_BID_INCREMENT = 100          # fallback min increment
 ANTI_SNIPE_EXTEND = 60          # +60s if bid in last 60s
@@ -53,7 +54,7 @@ def get_char(char_id):
     conn = db_connect(DB)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT id, name, anime, rarity, img_url FROM characters WHERE id = ?",
+        "SELECT id, name, anime, rarity, image_url FROM characters WHERE id = ?",
         (str(char_id),),
     ).fetchone()
     conn.close()
@@ -61,11 +62,11 @@ def get_char(char_id):
 
 
 def _safe_img(char):
-    """Return img URL / file_id / None — never a bad default."""
+    """Return an approved character image URL or ``None``."""
     if not char:
         return None
-    url = (char.get("img_url") or "").strip()
-    return url or None
+    url = (char.get("image_url") or "").strip()
+    return url if is_allowed_character_image_url(url) else None
 
 
 # ==================== UI BUILDERS ====================
@@ -133,17 +134,8 @@ def build_auction_keyboard(auction_id: int) -> InlineKeyboardMarkup:
 
 
 async def _send_auction_photo(context, chat_id, img_input, caption, keyboard):
-    """Try local file → URL/file_id → text-only fallback."""
-    if img_input and (img_input.startswith("/") or img_input.startswith("./")):
-        try:
-            return await context.bot.send_photo(
-                chat_id=chat_id, photo=open(img_input, "rb"),
-                caption=caption, parse_mode=ParseMode.HTML, reply_markup=keyboard,
-            )
-        except Exception as e:
-            logger.warning("local open failed: %s", e)
-
-    if img_input and (img_input.startswith(("http://", "https://")) or len(img_input) >= 20):
+    """Send an approved Catbox/ImgBB character image or a text fallback."""
+    if is_allowed_character_image_url(img_input):
         try:
             return await context.bot.send_photo(
                 chat_id=chat_id, photo=img_input,

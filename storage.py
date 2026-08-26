@@ -1,7 +1,8 @@
-"""Database connection compatibility layer.
+"""PostgreSQL-only connection layer for Summon-bot runtime data.
 
-SQLite remains the zero-configuration default. Set DATABASE_URL to a PostgreSQL
-connection string to use a durable external database in production.
+All player, collection, economy, and transaction state is stored in PostgreSQL.
+SQLite is retained only by the explicit offline migration utility as a source
+format; the bot never opens a local SQLite database at runtime.
 """
 from __future__ import annotations
 
@@ -167,14 +168,17 @@ class PostgresConnection:
 
 
 def connect(database: str | None = None):
-    """Return a SQLite or PostgreSQL connection using the active configuration."""
-    if using_postgres():
-        return PostgresConnection(DATABASE_URL)
-    if DATABASE_URL:
+    """Return the configured PostgreSQL connection.
+
+    The optional ``database`` argument exists only for legacy helper signatures;
+    no local file database is opened by this function.
+    """
+    if not using_postgres():
         raise RuntimeError(
-            "Unsupported DATABASE_URL scheme. Use postgresql://... or leave it empty for SQLite."
+            "DATABASE_URL must be a postgresql:// or postgres:// URL. "
+            "Summon-bot no longer supports SQLite at runtime."
         )
-    return sqlite3.connect(database or DB_NAME)
+    return PostgresConnection(DATABASE_URL)
 
 
 def _is_table_info_query(query: str) -> bool:
@@ -232,6 +236,5 @@ def _translate_sql(query: str) -> str:
     return sql
 
 
-# Read the configured URL only after all helpers are defined so importing this
-# module remains cheap and SQLite stays the default when it is empty.
+# Read the configured URL only after all helpers are defined.
 configure(DATABASE_URL)

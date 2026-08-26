@@ -100,7 +100,7 @@ def init_db():
             name TEXT,
             anime TEXT,
             rarity TEXT,
-            msg_id TEXT,
+            image_url TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -109,14 +109,10 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
-    for migration in [
-         "ALTER TABLE characters ADD COLUMN img_url TEXT",
-         "ALTER TABLE characters ADD COLUMN img_url2 TEXT",
-     ]:
-         try:
-             cursor.execute(migration)
-         except sqlite3.OperationalError:
-             pass
+    try:
+        cursor.execute("ALTER TABLE characters ADD COLUMN image_url TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # 4️⃣ redeem_codes
     cursor.execute("""
@@ -279,7 +275,7 @@ def init_db():
             highest_bid INTEGER NOT NULL,
             highest_bidder_id INTEGER,
             chat_id INTEGER,
-            pinned_msg_id INTEGER,
+            pinned_image_url INTEGER,
             created_at REAL NOT NULL,
             end_time REAL NOT NULL,
             status TEXT DEFAULT 'active'
@@ -607,7 +603,7 @@ def unlock_achievement(user_id: int, achievement_id: str) -> bool:
 # Market helpers
 def get_market_pool():
     return fetch_all("""
-        SELECT c.id, c.name, c.anime, c.rarity, c.msg_id
+        SELECT c.id, c.name, c.anime, c.rarity, c.image_url
         FROM market_pool mp
         JOIN characters c ON mp.char_id = c.id
     """)
@@ -702,7 +698,7 @@ def get_top_by_collection(limit: int = 10):
 def get_user_collection(user_id: int):
     """Get all characters owned by user (with rarity info)."""
     return fetch_all("""
-        SELECT c.id, c.name, c.anime, c.rarity, c.msg_id, uc.count
+        SELECT c.id, c.name, c.anime, c.rarity, c.image_url, uc.count
         FROM user_collection uc
         JOIN characters c ON uc.character_id = c.id
         WHERE uc.user_id = ?
@@ -722,7 +718,7 @@ def get_character(char_id: str):
 
 def get_random_character(rarity: str = None):
     # Specify the exact columns in the exact order needed by your spawn function
-    query_columns = "id, name, anime, rarity, msg_id"
+    query_columns = "id, name, anime, rarity, image_url"
     
     if rarity:
         return fetch_one(f"""
