@@ -438,6 +438,27 @@ def init_db():
                 # SQLite does not support ALTER COLUMN; production is
                 # PostgreSQL, where the migration above is applied.
                 pass
+
+    # Older PostgreSQL boots created these SQLite-compatible date columns as
+    # TEXT. Convert them once so comparisons against CURRENT_TIMESTAMP and
+    # interval arithmetic remain type-safe after the SQL compatibility layer
+    # is removed or bypassed.
+    timestamp_columns = {
+        "premium": ("expires_at", "granted_at"),
+        "cooldowns": ("last_used",),
+        "user_inventory": ("purchased_at", "expires_at"),
+    }
+    for table, columns in timestamp_columns.items():
+        for column in columns:
+            try:
+                cursor.execute(
+                    f"ALTER TABLE {table} ALTER COLUMN {column} TYPE TIMESTAMP "
+                    f"USING NULLIF({column}::text, '')::timestamp"
+                )
+            except sqlite3.OperationalError:
+                # SQLite does not support ALTER COLUMN; PostgreSQL applies the
+                # conversion and safely keeps already-timestamp columns.
+                pass
     # =========================================================
 
     conn.commit()
