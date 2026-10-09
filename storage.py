@@ -128,6 +128,11 @@ class PostgresCursor:
     def __iter__(self):
         return iter(self.fetchall())
 
+    @property
+    def rowcount(self) -> int:
+        """Expose affected-row counts used by idempotent write paths."""
+        return self._cursor.rowcount
+
     def close(self):
         self._cursor.close()
 
@@ -195,11 +200,25 @@ def _replace_qmark_params(query: str) -> str:
 def _translate_sql(query: str) -> str:
     sql = query.strip()
     sql = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", sql, flags=re.IGNORECASE)
-    sql = re.sub(r"\bINSERT\s+OR\s+REPLACE\s+INTO\s+banned_users\b", "INSERT INTO banned_users", sql, flags=re.IGNORECASE)
+    sql = re.sub(
+        r"\bINSERT\s+OR\s+REPLACE\s+INTO\s+(banned_users|sudo_users)\b",
+        r"INSERT INTO \1",
+        sql,
+        flags=re.IGNORECASE,
+    )
     sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
     sql = re.sub(
         r"\bTEXT\s+DEFAULT\s+CURRENT_TIMESTAMP\b",
         "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    # Runtime expiry/cooldown fields are compared with PostgreSQL timestamps.
+    # Keeping them as TEXT works in SQLite but fails as soon as PostgreSQL
+    # evaluates `text > timestamp` or receives CURRENT_TIMESTAMP on insert.
+    sql = re.sub(
+        r"\b(expires_at|last_used)\s+TEXT\b",
+        r"\1 TIMESTAMP",
         sql,
         flags=re.IGNORECASE,
     )
@@ -224,7 +243,9 @@ def _translate_sql(query: str) -> str:
     sql = _replace_qmark_params(sql)
     upper = sql.upper()
     if upper.startswith("INSERT INTO") and "ON CONFLICT" not in upper:
-        if "BANNED_USERS" in upper and "USER_ID" in upper:
+        # SQLite's OR REPLACE is used only for these two user-keyed tables in
+        # the runtime code. Translate it to an explicit PostgreSQL upsert.
+        if ("BANNED_USERS" in upper or "SUDO_USERS" in upper) and "USER_ID" in upper:
             columns_match = re.search(r"\(([^)]+)\)\s*VALUES", sql, re.IGNORECASE | re.DOTALL)
             if columns_match:
                 columns = [column.strip() for column in columns_match.group(1).split(",")]

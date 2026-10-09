@@ -252,10 +252,14 @@ async def cmd_auction(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """INSERT INTO auctions
                (character_id, seller_id, start_price, highest_bid,
                 highest_bidder_id, chat_id, created_at, end_time, status)
-               VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 'active')""",
+               VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 'active')
+               RETURNING id""",
             (char_id, user.id, start_price, start_price, update.effective_chat.id, now, end_time),
         )
-        auc_id = cur.lastrowid
+        inserted = cur.fetchone()
+        if not inserted:
+            raise RuntimeError("Auction insert did not return an ID")
+        auc_id = inserted[0]
         conn.execute(
             "DELETE FROM user_collection WHERE user_id = ? AND character_id = ?",
             (user.id, char_id),

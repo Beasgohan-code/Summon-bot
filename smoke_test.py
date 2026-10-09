@@ -33,6 +33,12 @@ assert "ON CONFLICT DO NOTHING" in storage._translate_sql(
 assert "CURRENT_TIMESTAMP" in storage._translate_sql(
     "SELECT * FROM premium WHERE expires_at > datetime('now')"
 )
+assert "ON CONFLICT (user_id) DO UPDATE" in storage._translate_sql(
+    "INSERT OR REPLACE INTO sudo_users (user_id, username) VALUES (?, ?)"
+)
+assert "expires_at TIMESTAMP NOT NULL" in storage._translate_sql(
+    "CREATE TABLE premium (user_id INTEGER PRIMARY KEY, expires_at TEXT NOT NULL)"
+)
 
 with patch.object(storage, "PostgresConnection", return_value="postgres-connection"):
     assert storage.connect() == "postgres-connection"
