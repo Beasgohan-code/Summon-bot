@@ -59,7 +59,7 @@ from commands_admin import (
     checkspawn, changetime,
     change_chance, chance_list, sudo_callback_handler,
     sudolist_command, editsudo_command, addsudo_command,
-    add_character, update_character,
+    upload_character, add_character, update_character,
     removeall, removeall_callback,
     transfer, gen_code, redeem_code,
     broadcast, save_group,
@@ -246,9 +246,10 @@ def register_handlers(application: Application):
     application.add_handler(CommandHandler("sudolist", sudolist_command))
     application.add_handler(CommandHandler("addsudo", addsudo_command))
     application.add_handler(CommandHandler(["editsudo", "rmsudo"], editsudo_command))
-    # Keep the names used by the owner panel and older admin workflows. All
-    # aliases share the same owner-or-sudo authorization and URL validation.
-    application.add_handler(CommandHandler(["addchar", "add", "upload"], add_character))
+    # /upload is the original media-reply workflow; /addchar and /add are
+    # the direct approved-URL workflow.
+    application.add_handler(CommandHandler("upload", upload_character))
+    application.add_handler(CommandHandler(["addchar", "add"], add_character))
     application.add_handler(CommandHandler(["updatechar", "update"], update_character))
     application.add_handler(CommandHandler("removeall", removeall))
     application.add_handler(CommandHandler("transfer", transfer))

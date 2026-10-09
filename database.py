@@ -2,7 +2,7 @@ from storage import connect as db_connect
 # Step 1: Clean the garbage at lines 
 import logging
 import sqlite3
-from config import DB_NAME, DEFAULT_SPAWN_LIMIT, STARTING_BALANCE
+from config import DB_NAME, DEFAULT_SPAWN_LIMIT, STARTING_BALANCE, OWNER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -599,6 +599,9 @@ def unban_user(user_id: int):
 
 # Sudo helpers
 def is_sudo(user_id: int) -> bool:
+    """Return whether a user is the configured owner or delegated sudo."""
+    if user_id == OWNER_ID:
+        return True
     return fetch_one("SELECT 1 FROM sudo_users WHERE user_id = ?", (user_id,)) is not None
 
 

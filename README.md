@@ -29,6 +29,20 @@ Set `LOGGER_ID` to a Telegram channel or group where the bot can post. Warnings 
 
 The Mini App assets are split into semantic HTML, responsive CSS, and a browser JavaScript module under `webapp/`. It includes dashboard balance, collection progress, secure daily/spin rewards, recent activity, leaderboard, theme switching, and Telegram haptics.
 
+## Admin character upload
+
+The owner and delegated sudo admins can upload a character by replying to a
+Telegram photo, video, or GIF with:
+
+```text
+/upload Yelan Genshin-impact 5
+```
+
+The same command can be used as a caption on the media. The bot stores a
+Telegram file reference in PostgreSQL rather than writing an upload directory
+or exposing a bot-token URL. `/addchar` and `/add` remain available for
+approved Catbox or ImgBB HTTPS URLs.
+
 ## Running reliably
 
 Use `supervisor.py` under a service manager. Its default behavior is to restart the bot after an unexpected crash and to start it again after a machine reboot when used with `summon-bot.service.example`. This is safer than killing the bot every 10 or 15 minutes because forced restarts create avoidable downtime and can interrupt an in-flight transaction.

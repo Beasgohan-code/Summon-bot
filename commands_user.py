@@ -46,7 +46,10 @@ from database import (
     MARKET_POOL_SIZE, MARKET_REFRESH_PRICE, MARKET_SELL_BACK_PERCENT,
 )
 from font import stylize_block, FONT_MAPS
-from media_urls import is_allowed_character_image_url
+from media_urls import (
+    is_allowed_character_image_url,
+    parse_telegram_media_reference,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,34 +70,46 @@ def f(text: str, user_id: int = None) -> str:
 
 
 async def send_character_media(bot, chat_id, image_url, caption, reply_markup=None):
-    """Send an approved external character image or a text fallback.
+    """Send a character's approved URL or Telegram media reference.
 
-    Character media is intentionally URL-only. Telegram file IDs, typed media
-    prefixes, and arbitrary hosts are never sent from this path.
+    ``telegram:<type>:<file_id>`` references are created by ``/upload`` and
+    contain no local path or bot token. They let uploaded photos, videos, and
+    GIFs survive restarts without requiring a second hosting service.
     """
-    if not is_allowed_character_image_url(image_url):
-        return await bot.send_message(
-            chat_id=chat_id,
-            text=caption,
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
+    telegram_media = parse_telegram_media_reference(image_url)
     try:
-        return await bot.send_photo(
-            chat_id=chat_id,
-            photo=image_url,
-            caption=caption,
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
+        if telegram_media:
+            media_type, file_id = telegram_media
+            sender = {
+                "photo": bot.send_photo,
+                "video": bot.send_video,
+                "animation": bot.send_animation,
+            }[media_type]
+            return await sender(
+                chat_id=chat_id,
+                **{media_type: file_id},
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+
+        if is_allowed_character_image_url(image_url):
+            return await bot.send_photo(
+                chat_id=chat_id,
+                photo=image_url,
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
     except Exception as exc:
-        logger.warning("send_character_media failed for approved image URL: %s", exc)
-        return await bot.send_message(
-            chat_id=chat_id,
-            text=caption,
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
+        logger.warning("send_character_media failed for character media: %s", exc)
+
+    return await bot.send_message(
+        chat_id=chat_id,
+        text=caption,
+        reply_markup=reply_markup,
+        parse_mode="HTML",
+    )
 
        
 # BAN CHECK

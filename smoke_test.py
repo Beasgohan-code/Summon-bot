@@ -37,6 +37,14 @@ assert "CURRENT_TIMESTAMP" in storage._translate_sql(
 with patch.object(storage, "PostgresConnection", return_value="postgres-connection"):
     assert storage.connect() == "postgres-connection"
 
+media_urls = importlib.import_module("media_urls")
+assert media_urls.telegram_media_reference("photo", "file-123") == "telegram:photo:file-123"
+assert media_urls.parse_telegram_media_reference("telegram:animation:file-123") == (
+    "animation",
+    "file-123",
+)
+assert media_urls.parse_telegram_media_reference("telegram:photo:file:with-colon") is None
+
 webapp = importlib.import_module("webapp")
 for asset_path in ("/app", "/app/styles.css", "/app/app.js", "/app/manifest.webmanifest"):
     asset_response = webapp.handle_request("GET", asset_path, "", {})

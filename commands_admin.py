@@ -1,13 +1,9 @@
 from storage import connect as db_connect
-import base64
-import os
-import aiohttp
-from pathlib import Path
 import string
 import random
-import sqlite3
 import logging
 from datetime import datetime
+from html import escape
 
 from telegram import (
     InlineKeyboardButton,
@@ -32,7 +28,7 @@ from database import (
     get_streak, update_streak,
 )
 from commands_user import check_ban, send_character_media
-from media_urls import require_character_image_url
+from media_urls import require_character_image_url, telegram_media_reference
 
 
 logger = logging.getLogger(__name__)
@@ -237,12 +233,133 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-# ====== TEMP STORAGE ======
-PENDING_UPLOADS = {}
-COUNTER = {"n": 0}
+# ==========================
+# /UPLOAD COMMAND
+# ==========================
+def _next_character_id(cursor) -> str:
+    """Return the first unused numeric character ID."""
+    cursor.execute("SELECT id FROM characters")
+    existing_ids = set()
+    for row in cursor.fetchall():
+        try:
+            existing_ids.add(int(row[0]))
+        except (TypeError, ValueError):
+            continue
 
-# Character uploads are URL-only. Use /upload (or /addchar) and /update
-# with a verified https://files.catbox.moe/... or https://i.ibb.co/... URL.
+    next_number = 1
+    while next_number in existing_ids:
+        next_number += 1
+    return f"{next_number:02d}"
+
+
+def _telegram_media_from_message(message):
+    """Return the best Telegram file ID and its media type from a message."""
+    if message.photo:
+        return "photo", message.photo[-1].file_id
+    if message.video:
+        return "video", message.video.file_id
+    if message.animation:
+        return "animation", message.animation.file_id
+    return None, None
+
+
+async def upload_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add a character from media replied to by the owner or a sudo admin.
+
+    Usage: reply to a photo, video, or GIF with
+    ``/upload <name> <anime> <rarity-id>``. Telegram file IDs are durable and
+    are stored as a ``telegram:...`` reference; no local upload directory or
+    bot-token-bearing URL is created.
+    """
+    user_id = update.effective_user.id
+    if not has_sudo_privileges(user_id):
+        return await update.message.reply_text("❌ You do not have Sudo privileges!")
+
+    # Accept both the documented reply workflow and a command used as a
+    # caption on the media itself.
+    media_message = update.message.reply_to_message or update.message
+    media_type, file_id = _telegram_media_from_message(media_message)
+    if not file_id:
+        return await update.message.reply_text(
+            "❌ Reply to, or caption, a photo, video, or GIF with this command.\n\n"
+            "💡 Usage: <code>/upload &lt;name&gt; &lt;anime&gt; &lt;rarity-id&gt;</code>\n"
+            "Example: <code>/upload Yelan Genshin-impact 5</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    if len(context.args) != 3:
+        return await update.message.reply_text(
+            "❌ Invalid format.\n\n"
+            "💡 Usage: <code>/upload &lt;name&gt; &lt;anime&gt; &lt;rarity-id&gt;</code>\n"
+            "Reply to or caption the media you want to upload.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    char_name = context.args[0].replace("-", " ").strip().title()
+    anime_name = context.args[1].replace("-", " ").strip().title()
+    try:
+        rarity_id = int(context.args[2])
+        rarity = RARITY_DISPLAY[rarity_id]
+    except (TypeError, ValueError, KeyError):
+        return await update.message.reply_text("❌ Invalid rarity ID. Use a number from 1 to 18.")
+
+    char_id = None
+    conn = db_connect(DB_NAME)
+    try:
+        cursor = conn.cursor()
+        char_id = _next_character_id(cursor)
+        media_reference = telegram_media_reference(media_type, file_id)
+        cursor.execute(
+            """
+            INSERT INTO characters (id, name, anime, rarity, image_url)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (char_id, char_name, anime_name, rarity, media_reference),
+        )
+        conn.commit()
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("Character upload failed for user %s", user_id)
+        return await update.message.reply_text(f"❌ Character upload failed: {escape(str(exc))}")
+    finally:
+        conn.close()
+
+    caption = (
+        "✅ <b>Character uploaded successfully</b>\n\n"
+        f"🆔 <b>ID:</b> <code>{escape(char_id)}</code>\n"
+        f"👤 <b>Name:</b> {escape(char_name)}\n"
+        f"🎌 <b>Anime:</b> {escape(anime_name)}\n"
+        f"✨ <b>Rarity:</b> {escape(rarity)}\n"
+        f"📂 <b>Media:</b> {escape(media_type.title())}"
+    )
+
+    # Keep the configured database/archive channel informed, but do not make a
+    # successful database write fail because that optional notification failed.
+    archive_chat = DB_CHANNEL_ID
+    if archive_chat and archive_chat != update.effective_chat.id:
+        try:
+            await send_character_media(
+                context.bot,
+                archive_chat,
+                media_reference,
+                caption,
+            )
+        except Exception:
+            logger.warning("Could not archive character %s", char_id, exc_info=True)
+
+    await send_character_media(
+        context.bot,
+        update.effective_chat.id,
+        media_reference,
+        caption,
+    )
+
+
+# Character metadata additions use approved external URLs. Use /addchar (or
+# /add) and /update when a URL is already available.
 
 async def trigger_spawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1. സുരക്ഷാ ചെക്ക് (Sudo/Owner ആണോ എന്ന് പരിശോധിക്കുന്നു)
