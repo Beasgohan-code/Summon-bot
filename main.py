@@ -2,6 +2,8 @@ import logging
 import sys
 from datetime import datetime
 
+from storage import connect as db_connect
+
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
@@ -17,7 +19,10 @@ from config import (
     PRICE, HIGH_TIER, SPIN_COOLDOWN_HOURS, HCLAIM_COOLDOWN_HOURS,
     SPAM_LIMIT, DAILY_REWARD,
     ENABLE_STREAK, ENABLE_ACHIEVEMENTS, ENABLE_MARKET, ENABLE_FONT,
+    LOGGER_ID, PORT, KEEPALIVE_URL, WEBAPP_ENABLED,
 )
+from health import HealthServer, HealthState, KeepAlive, Watchdog
+from logging_utils import install_telegram_log_handler, send_startup_log
 from database import init_db, ACHIEVEMENTS, STREAK_BONUS_TIERS, MARKET_POOL_SIZE, MARKET_REFRESH_PRICE
 
 from plugins.profile import profile_cmd
@@ -70,6 +75,7 @@ from inline_search import inline_search
 from catch_all import track_messages_and_save_group
 
 logger = logging.getLogger(__name__)
+_telegram_log_handler = None
 
 
 # ==================== POST INIT ====================
@@ -137,6 +143,18 @@ async def post_init(application: Application):
 ║  🟢  Status: ONLINE                      ║
 ╚══════════════════════════════════════════╝
     """)
+
+    # Send an immediate operational card to LOGGER_ID. This is separate from
+    # the background warning/error queue, so every clean boot is visible.
+    await send_startup_log(
+        application.bot,
+        bot_username=bot.username or BOT_USERNAME,
+        database="PostgreSQL",
+        port=PORT,
+        keepalive_url=KEEPALIVE_URL,
+        webapp_enabled=WEBAPP_ENABLED,
+        chat_id=LOGGER_ID,
+    )
 
     # Notify owner
     try:
@@ -316,6 +334,17 @@ def register_handlers(application: Application):
     logger.info("✅ All handlers registered")
 
 
+# ==================== OPERATIONS ====================
+def database_probe():
+    """Run a cheap read-only PostgreSQL probe for readiness/watchdog checks."""
+    connection = db_connect(DB_NAME)
+    try:
+        row = connection.execute("SELECT 1").fetchone()
+        return {"ok": bool(row and row[0] == 1), "backend": "postgresql"}
+    finally:
+        connection.close()
+
+
 # ==================== MAIN ====================
 def validate_config():
     if not BOT_TOKEN or BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE":
@@ -330,25 +359,44 @@ def validate_config():
 
 
 def main():
+    global _telegram_log_handler
     validate_config()
-    print("🔧 Initializing database...")
-    init_db()
-    print("✅ Database ready")
-    print("🔧 Building application...")
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
+    telegram_log_handler = install_telegram_log_handler(BOT_TOKEN, LOGGER_ID)
+    _telegram_log_handler = telegram_log_handler
+    health_state = HealthState()
+    health_server = HealthServer(health_state, PORT)
+    watchdog = Watchdog(health_state, database_probe)
+    keepalive = KeepAlive(health_state)
 
-    print("🔧 Registering handlers...")
-    register_handlers(application)
-    print("🚀 Starting polling...")
-    application.run_polling(
-        allowed_updates=["message", "edited_message", "callback_query", "inline_query"],
-        drop_pending_updates=True,
-    )
+    # Start HTTP health/web-app routes before the database boot so Render can
+    # see a useful liveness response while startup is still in progress.
+    health_server.start()
+    watchdog.start()
+    keepalive.start()
+    try:
+        print("🔧 Initializing database...")
+        init_db()
+        health_state.mark_ready({"ok": True, "backend": "postgresql"})
+        print("✅ Database ready")
+        print("🔧 Building application...")
+        application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .post_init(post_init)
+            .build()
+        )
+
+        print("🔧 Registering handlers...")
+        register_handlers(application)
+        print("🚀 Starting polling with health/watchdog services...")
+        application.run_polling(
+            allowed_updates=["message", "edited_message", "callback_query", "inline_query"],
+            drop_pending_updates=True,
+        )
+    finally:
+        keepalive.stop()
+        watchdog.stop()
+        health_server.stop()
 
 
 if __name__ == "__main__":
@@ -360,3 +408,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        if _telegram_log_handler:
+            _telegram_log_handler.close()

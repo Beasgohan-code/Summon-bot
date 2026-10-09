@@ -374,6 +374,18 @@ def init_db():
         )
     """)
 
+    # 🎮 Mini App reward ledger. Rewards are generated on the server and the
+    # event ID prevents a retried browser request from paying twice.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS miniapp_rewards (
+            event_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            game TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # ==================== 🔧 MIGRATIONS ====================
     # Add new columns to existing tables (idempotent)
     migrations = [
@@ -390,6 +402,42 @@ def init_db():
             logger.info(f"✅ Added column {table}.{column}")
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    # Telegram IDs and supergroup chat IDs are larger than PostgreSQL's
+    # 32-bit INTEGER range (for example, -1003908312302). Upgrade every
+    # identity-bearing column so message tracking never fails on a real group.
+    telegram_id_columns = {
+        "users": ("user_id",),
+        "warnings": ("user_id", "warned_by"),
+        "group_settings": ("chat_id",),
+        "user_collection": ("user_id",),
+        "redeem_codes": ("created_by",),
+        "banned_users": ("user_id",),
+        "groups": ("chat_id",),
+        "sudo_users": ("user_id",),
+        "sudo_admins": ("user_id", "added_by"),
+        "premium": ("user_id", "granted_by"),
+        "cooldowns": ("user_id",),
+        "user_inventory": ("user_id",),
+        "auctions": ("seller_id", "highest_bidder_id", "chat_id"),
+        "auction_bids": ("user_id",),
+        "auction_bid_input": ("user_id",),
+        "user_streaks": ("user_id",),
+        "user_achievements": ("user_id",),
+        "market_transactions": ("user_id",),
+        "user_preferences": ("user_id",),
+        "gift_log": ("from_user", "to_user"),
+        "activity_log": ("user_id",),
+        "miniapp_rewards": ("user_id",),
+    }
+    for table, columns in telegram_id_columns.items():
+        for column in columns:
+            try:
+                cursor.execute(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE BIGINT")
+            except sqlite3.OperationalError:
+                # SQLite does not support ALTER COLUMN; production is
+                # PostgreSQL, where the migration above is applied.
+                pass
     # =========================================================
 
     conn.commit()

@@ -119,6 +119,6 @@ async def track_messages_and_save_group(update: Update, context: ContextTypes.DE
             print(f"🎯 Spawn limit reached in {chat_id}! Triggering auto spawn...")
             await trigger_weighted_spawn(context, chat_id)
 
-    except Exception as e:
-        logger.error(f"Error in track_messages_and_save_group: {e}")
+    except Exception:
+        logger.exception("Error in track_messages_and_save_group")
 
