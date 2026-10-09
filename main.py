@@ -246,7 +246,9 @@ def register_handlers(application: Application):
     application.add_handler(CommandHandler("sudolist", sudolist_command))
     application.add_handler(CommandHandler("addsudo", addsudo_command))
     application.add_handler(CommandHandler(["editsudo", "rmsudo"], editsudo_command))
-    application.add_handler(CommandHandler("addchar", add_character))
+    # Keep the names used by the owner panel and older admin workflows. All
+    # aliases share the same owner-or-sudo authorization and URL validation.
+    application.add_handler(CommandHandler(["addchar", "add", "upload"], add_character))
     application.add_handler(CommandHandler(["updatechar", "update"], update_character))
     application.add_handler(CommandHandler("removeall", removeall))
     application.add_handler(CommandHandler("transfer", transfer))

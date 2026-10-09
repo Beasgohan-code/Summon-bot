@@ -42,6 +42,16 @@ def is_owner(user_id: int) -> bool:
     return user_id == OWNER_ID
 
 
+def has_sudo_privileges(user_id: int) -> bool:
+    """Return whether a user has owner-level or delegated sudo access.
+
+    The owner is intentionally not required to appear in ``sudo_users``.  The
+    owner is the source of truth for full access, while that table contains
+    only delegated administrators.
+    """
+    return is_owner(user_id) or is_sudo(user_id)
+
+
 RARITY_DISPLAY = {
     1: "⚪ Common", 2: "🔵 Rare", 3: "💮 Special Edition", 
     4: "⭐ Legendary", 5: "🛸 Mythic Edition",
@@ -56,11 +66,8 @@ RARITY_DISPLAY = {
 # SUDO CHECK
 # ==========================
 def check_sudo(update: Update):
-    """Returns True if user is owner or sudo."""
-    user_id = update.effective_user.id
-    if user_id == OWNER_ID or is_sudo(user_id):
-        return True
-    return False
+    """Return whether the effective user is the owner or a sudo admin."""
+    return has_sudo_privileges(update.effective_user.id)
 
 
 async def _deny(update):
@@ -234,8 +241,8 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 PENDING_UPLOADS = {}
 COUNTER = {"n": 0}
 
-# Character uploads are URL-only. Use /add and /update with a verified
-# https://files.catbox.moe/... or https://i.ibb.co/... image URL.
+# Character uploads are URL-only. Use /upload (or /addchar) and /update
+# with a verified https://files.catbox.moe/... or https://i.ibb.co/... URL.
 
 async def trigger_spawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1. സുരക്ഷാ ചെക്ക് (Sudo/Owner ആണോ എന്ന് പരിശോധിക്കുന്നു)
@@ -637,7 +644,7 @@ async def addsudo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sudolist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    if not is_sudo(user_id):
+    if not has_sudo_privileges(user_id):
         return await update.message.reply_text("❌ You do not have permission to view the Sudo List!")
 
     conn = db_connect(DB_NAME)
@@ -769,13 +776,16 @@ async def sudo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def add_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Create a character with a direct Catbox or ImgBB HTTPS image URL.
 
-    Usage: /add <name> <anime> <rarity-id> <image-url>
+    Usage: /upload <name> <anime> <rarity-id> <image-url>
+    (``/addchar`` and ``/add`` are aliases.)
     """
-    if not is_sudo(update.effective_user.id):
+    if not has_sudo_privileges(update.effective_user.id):
         return await update.message.reply_text("❌ You do not have Sudo privileges!")
     if len(context.args) != 4:
         return await update.message.reply_text(
-            "💡 Usage: <code>/add &lt;name&gt; &lt;anime&gt; &lt;rarity-id&gt; &lt;Catbox-or-ImgBB-HTTPS-URL&gt;</code>",
+            "💡 Usage: <code>/upload &lt;name&gt; &lt;anime&gt; &lt;rarity-id&gt; "
+            "&lt;Catbox-or-ImgBB-HTTPS-URL&gt;</code>\n"
+            "Aliases: <code>/addchar</code> and <code>/add</code>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -817,7 +827,7 @@ async def add_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def update_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Update character metadata or its approved external image URL."""
-    if not is_sudo(update.effective_user.id):
+    if not has_sudo_privileges(update.effective_user.id):
         return await update.message.reply_text("❌ You do not have Sudo privileges!")
     if len(context.args) < 3:
         return await update.message.reply_text(
@@ -868,7 +878,7 @@ async def update_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 3️⃣ DELETE CHARACTER (/deletechar)
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_sudo(user_id):
+    if not has_sudo_privileges(user_id):
         return await update.message.reply_text("❌ You do not have Sudo privileges!")
 
     if not context.args:
