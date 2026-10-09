@@ -98,7 +98,8 @@ def get_user_data(user_id):
     rank = cur.execute("""
         SELECT COUNT(*) + 1 FROM (
             SELECT user_id, COUNT(DISTINCT character_id) as cnt
-            FROM user_collection GROUP BY user_id HAVING cnt > ?
+            FROM user_collection GROUP BY user_id
+            HAVING COUNT(DISTINCT character_id) > ?
         )
     """, (unique_chars,)).fetchone()[0] or 1
 

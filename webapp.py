@@ -113,7 +113,8 @@ def _dashboard(user_id: int) -> dict:
         try:
             row = connection.execute(
                 "SELECT COUNT(*) + 1 FROM (SELECT user_id, COUNT(DISTINCT character_id) AS total "
-                "FROM user_collection GROUP BY user_id HAVING total > ?)", (unique,)
+                "FROM user_collection GROUP BY user_id "
+                "HAVING COUNT(DISTINCT character_id) > ?)", (unique,)
             ).fetchone()
             rank = int(row[0]) if row else None
         except Exception:

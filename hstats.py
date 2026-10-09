@@ -246,7 +246,8 @@ async def hstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rank_row = cur.execute("""
         SELECT COUNT(*) + 1 FROM (
             SELECT user_id, COUNT(DISTINCT character_id) as cnt
-            FROM user_collection GROUP BY user_id HAVING cnt > ?
+            FROM user_collection GROUP BY user_id
+            HAVING COUNT(DISTINCT character_id) > ?
         )
     """, (unique_chars,)).fetchone()
     rank = rank_row[0] if rank_row else 1
