@@ -1894,7 +1894,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     if 'send_character_media' in globals():
-        await update.message.reply_text(
+        await send_character_media(
             bot=context.bot,
             chat_id=update.effective_chat.id,
             image_url=image_url,
@@ -2628,30 +2628,26 @@ async def font_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         
         try:
-            if 'send' in globals():
-                return await update.message.reply_text(update, text, reply_markup=kb)
-            else:
-                return await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            return await update.message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+            )
         except Exception:
+            logger.exception("Font menu reply failed")
             return
 
     # /font mono എന്നിങ്ങനെ ടൈപ്പ് ചെയ്ത് മാറ്റാൻ നോക്കുമ്പോൾ
     font = context.args[0].lower()
     if font not in allowed_fonts:
         error_text = "❌ <b>Unknown Font Style!</b>\n\nChoose from: <code>mono, fraktur, script, double</code>"
-        if 'send' in globals():
-            return await update.message.reply_text(update, error_text)
-        else:
-            return await update.message.reply_text(error_text, parse_mode=ParseMode.HTML)
+        return await update.message.reply_text(error_text, parse_mode=ParseMode.HTML)
 
     if 'set_font_pref' in globals():
         set_font_pref(user_id, font)
         
     success_text = f"✅ <b>Font preference successfully updated to:</b> <code>{font.upper()}</code>"
-    if 'send' in globals():
-        await update.message.reply_text(update, success_text)
-    else:
-        await update.message.reply_text(success_text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(success_text, parse_mode=ParseMode.HTML)
 
 
 # ==========================================

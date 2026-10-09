@@ -1,6 +1,7 @@
 import random
 import os
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -61,6 +62,17 @@ LOG_TELEGRAM_LEVEL = os.getenv("LOG_TELEGRAM_LEVEL", "WARNING").upper()
 LOG_BATCH_SECONDS = max(0.2, float(os.getenv("LOG_BATCH_SECONDS", "1.5")))
 PORT = _int_env("PORT", 8080)
 KEEPALIVE_URL = os.getenv("KEEPALIVE_URL", "https://summon-bot-wngc.onrender.com").strip()
+
+
+def _default_webhook_url() -> str:
+    parsed = urlsplit(KEEPALIVE_URL)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, "/telegram/webhook", "", ""))
+
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", _default_webhook_url()).strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 KEEPALIVE_INTERVAL_SECONDS = max(30, _int_env("KEEPALIVE_INTERVAL_SECONDS", 300))
 KEEPALIVE_TIMEOUT_SECONDS = max(2, _int_env("KEEPALIVE_TIMEOUT_SECONDS", 10))
 WATCHDOG_INTERVAL_SECONDS = max(15, _int_env("WATCHDOG_INTERVAL_SECONDS", 60))

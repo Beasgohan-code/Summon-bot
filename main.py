@@ -1,8 +1,12 @@
+import asyncio
 import logging
+import signal
 import sys
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from storage import connect as db_connect
+
 
 from telegram import Update, BotCommand
 from telegram.ext import (
@@ -20,6 +24,7 @@ from config import (
     SPAM_LIMIT, DAILY_REWARD,
     ENABLE_STREAK, ENABLE_ACHIEVEMENTS, ENABLE_MARKET, ENABLE_FONT,
     LOGGER_ID, PORT, KEEPALIVE_URL, WEBAPP_ENABLED,
+    WEBHOOK_URL, WEBHOOK_SECRET,
 )
 from health import HealthServer, HealthState, KeepAlive, Watchdog
 from logging_utils import install_telegram_log_handler, send_startup_log
@@ -359,47 +364,123 @@ def validate_config():
             "DATABASE_URL must be configured with a PostgreSQL connection URL. "
             "SQLite runtime storage is no longer supported."
         )
+    webhook = urlsplit(WEBHOOK_URL)
+    if webhook.scheme != "https" or not webhook.netloc or not webhook.path:
+        raise RuntimeError(
+            "WEBHOOK_URL must be a public HTTPS URL, for example "
+            "https://summon-bot-wngc.onrender.com/telegram/webhook."
+        )
+    if not 1 <= len(WEBHOOK_SECRET) <= 256:
+        raise RuntimeError("WEBHOOK_SECRET must be a 1-256 character Telegram webhook secret.")
 
 
-def main():
+async def async_main():
     global _telegram_log_handler
     validate_config()
     telegram_log_handler = install_telegram_log_handler(BOT_TOKEN, LOGGER_ID)
     _telegram_log_handler = telegram_log_handler
+
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+    application_holder: dict[str, Application] = {}
+
+    def enqueue_webhook(payload: dict, headers: dict[str, str]) -> bool:
+        """Validate and enqueue a webhook update from the HTTP worker thread."""
+        supplied_secret = next(
+            (value for key, value in headers.items() if key.lower() == "x-telegram-bot-api-secret-token"),
+            "",
+        )
+        if supplied_secret != WEBHOOK_SECRET or not isinstance(payload, dict):
+            return False
+        application = application_holder.get("application")
+        if application is None:
+            return False
+        try:
+            update = Update.de_json(payload, application.bot)
+            if update is None:
+                return False
+        except Exception:
+            logger.warning("Rejected malformed Telegram webhook update", exc_info=True)
+            return False
+
+        def put_update() -> None:
+            try:
+                application.update_queue.put_nowait(update)
+            except Exception:
+                logger.exception("Could not enqueue Telegram webhook update")
+
+        loop.call_soon_threadsafe(put_update)
+        return True
+
+    webhook_path = urlsplit(WEBHOOK_URL).path
     health_state = HealthState()
-    health_server = HealthServer(health_state, PORT)
+    health_server = HealthServer(
+        health_state,
+        PORT,
+        webhook_path=webhook_path,
+        webhook_handler=enqueue_webhook,
+    )
     watchdog = Watchdog(health_state, database_probe)
     keepalive = KeepAlive(health_state)
 
-    # Start HTTP health/web-app routes before the database boot so Render can
-    # see a useful liveness response while startup is still in progress.
+    # Start HTTP health/web-app/webhook routes before database boot so Render
+    # sees a liveness response while the bot is still initializing.
     health_server.start()
     watchdog.start()
     keepalive.start()
+    application: Application | None = None
+    application_started = False
     try:
         print("🔧 Initializing database...")
         init_db()
-        health_state.mark_ready({"ok": True, "backend": "postgresql"})
+        health_state.mark_ready({"ok": True, "backend": "postgresql", "runtime": "webhook"})
         print("✅ Database ready")
         print("🔧 Building application...")
-        application = (
-            Application.builder()
-            .token(BOT_TOKEN)
-            .post_init(post_init)
-            .build()
-        )
+        application = Application.builder().token(BOT_TOKEN).build()
+        application_holder["application"] = application
 
         print("🔧 Registering handlers...")
         register_handlers(application)
-        print("🚀 Starting polling with health/watchdog services...")
-        application.run_polling(
-            allowed_updates=["message", "edited_message", "callback_query", "inline_query"],
-            drop_pending_updates=True,
-        )
+        await application.initialize()
+        await post_init(application)
+        await application.start()
+        application_started = True
+
+        webhook_kwargs = {
+            "url": WEBHOOK_URL,
+            "secret_token": WEBHOOK_SECRET,
+            "allowed_updates": ["message", "edited_message", "callback_query", "inline_query"],
+            "drop_pending_updates": True,
+        }
+        await application.bot.set_webhook(**webhook_kwargs)
+        logger.info("Telegram webhook active at %s", WEBHOOK_URL)
+        print("🚀 Webhook runtime active with health/watchdog services")
+
+        for signal_name in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(signal_name, stop_event.set)
+            except (NotImplementedError, RuntimeError):
+                pass
+        await stop_event.wait()
     finally:
+        application_holder.clear()
+        if application is not None:
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=False)
+            except Exception:
+                logger.warning("Could not delete Telegram webhook during shutdown", exc_info=True)
+            try:
+                if application_started:
+                    await application.stop()
+            finally:
+                await application.shutdown()
         keepalive.stop()
         watchdog.stop()
         health_server.stop()
+
+
+def main():
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":

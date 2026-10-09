@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlsplit, urlunsplit
+from typing import Callable
 
 from config import (
     KEEPALIVE_INTERVAL_SECONDS,
@@ -196,11 +197,22 @@ def normalize_keepalive_url(url: str) -> str:
 class HealthServer:
     """Small dependency-light HTTP server for health and same-origin Mini App routes."""
 
-    def __init__(self, state: HealthState, port: int = PORT):
+    def __init__(
+        self,
+        state: HealthState,
+        port: int = PORT,
+        webhook_path: str = "",
+        webhook_handler: Callable[[dict, dict[str, str]], bool] | None = None,
+    ):
         self.state = state
         self.port = int(port)
+        self.webhook_path = "/" + webhook_path.strip("/") if webhook_path else ""
+        self.webhook_handler = webhook_handler
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
+
+    def set_webhook_handler(self, handler: Callable[[dict, dict[str, str]], bool] | None) -> None:
+        self.webhook_handler = handler
 
     def start(self) -> None:
         owner = self
@@ -222,6 +234,24 @@ class HealthServer:
                             return
                         body = self.rfile.read(max(0, content_length))
                     path, _, query = self.path.partition("?")
+                    if method == "POST" and owner.webhook_path and path == owner.webhook_path:
+                        if owner.webhook_handler is None:
+                            self._write(503, "application/json; charset=utf-8", b'{"ok":false,"error":"webhook is starting"}')
+                            return
+                        try:
+                            payload = json.loads(body.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            self._write(400, "application/json; charset=utf-8", b'{"ok":false,"error":"invalid update"}')
+                            return
+                        accepted = owner.webhook_handler(
+                            payload,
+                            {key: value for key, value in self.headers.items()},
+                        )
+                        if not accepted:
+                            self._write(403, "application/json; charset=utf-8", b'{"ok":false,"error":"forbidden"}')
+                            return
+                        self._write(200, "application/json; charset=utf-8", b'{"ok":true}')
+                        return
                     if path in {"/healthz", "/readyz", "/"}:
                         snapshot = owner.state.snapshot()
                         status = 200 if path == "/healthz" or snapshot["ready"] else 503

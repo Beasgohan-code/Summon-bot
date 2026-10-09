@@ -21,7 +21,7 @@ Copy `.env.example` to `.env` and provide the Telegram credentials, owner ID, ow
 
 ## Health, keep-alive, watchdog, and Mini App
 
-The bot starts a lightweight HTTP server on `0.0.0.0:$PORT` alongside PTB polling. It provides `/healthz` for liveness, `/readyz` for database readiness, and the same-origin Mini App at `/app/`. The Mini App authenticates every API request with Telegram WebApp init data and credits server-generated rewards to the existing bot balance.
+The bot starts a lightweight HTTP server on `0.0.0.0:$PORT` for the PTB webhook, `/healthz` liveness, `/readyz` database readiness, and the same-origin Mini App at `/app/`. Set `WEBHOOK_URL` and a random `WEBHOOK_SECRET`; Telegram updates are accepted only at the configured HTTPS webhook path. The Mini App authenticates every API request with Telegram WebApp init data and credits server-generated rewards to the existing bot balance.
 
 `KeepAlive` requests the configured `KEEPALIVE_URL/healthz` at a safe interval so providers such as Render do not unnecessarily sleep the service. `Watchdog` performs a read-only PostgreSQL probe and records heartbeat/database state in the health response. Neither component changes the bot's command routing or economy rules.
 
