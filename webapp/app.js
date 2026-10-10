@@ -9,7 +9,11 @@ const state = {
   guest: false,
   transactionFilter: 'all',
   transactionSearch: '',
+  transactionSort: 'newest',
+  transactionRange: 'all',
   tickerTimer: null,
+  cooldownTimer: null,
+  selectedTransaction: null,
 };
 const initData = tg?.initData || '';
 const fmt = new Intl.NumberFormat();
@@ -64,6 +68,29 @@ function duration(seconds) {
   const hours = Math.floor(value / 3600);
   const minutes = Math.floor((value % 3600) / 60);
   return hours ? `${hours}h ${minutes}m left` : `${Math.max(1, minutes)}m left`;
+}
+function gameLabel(game) { return game === 'spin' ? 'Cosmic spin' : 'Daily vault'; }
+function formatDate(value) {
+  const parsed = parseTimestamp(value);
+  return parsed ? parsed.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'Recently';
+}
+function transactionMatches(item) {
+  const query = state.transactionSearch.trim().toLowerCase();
+  const modeMatch = state.transactionFilter === 'all' || item.game === state.transactionFilter;
+  const text = `${gameLabel(item.game)} ${item.game || ''} ${item.amount || ''} ${item.created_at || ''} ${item.id || ''}`.toLowerCase();
+  if (!modeMatch || (query && !text.includes(query))) return false;
+  const created = parseTimestamp(item.created_at);
+  if (state.transactionRange === 'today' && (!created || dateKey(created) !== dateKey(new Date()))) return false;
+  if (state.transactionRange === '7d' && (!created || Date.now() - created.getTime() > 7 * 86400000)) return false;
+  return true;
+}
+function visibleTransactions(items = []) {
+  const filtered = items.filter(transactionMatches);
+  return filtered.sort((a, b) => {
+    if (state.transactionSort === 'largest') return (Number(b.amount) || 0) - (Number(a.amount) || 0);
+    if (state.transactionSort === 'mode') return gameLabel(a.game).localeCompare(gameLabel(b.game)) || (Number(b.amount) || 0) - (Number(a.amount) || 0);
+    return (parseTimestamp(b.created_at)?.getTime() || 0) - (parseTimestamp(a.created_at)?.getTime() || 0);
+  });
 }
 
 async function api(path, options = {}) {
@@ -149,13 +176,32 @@ function renderGames(cooldowns = {}) {
     });
   });
 }
+function startCooldownTicker() {
+  clearInterval(state.cooldownTimer);
+  state.cooldownTimer = setInterval(() => {
+    if (state.guest || !state.data?.cooldowns) return;
+    let changed = false;
+    Object.values(state.data.cooldowns).forEach((info) => {
+      if (info?.available) return;
+      info.remaining_seconds = Math.max(0, (Number(info.remaining_seconds) || 0) - 1);
+      if (info.remaining_seconds === 0) info.available = true;
+      changed = true;
+    });
+    if (changed) {
+      renderGames(state.data.cooldowns);
+      renderInsights(state.data.history || [], state.data.cooldowns);
+      renderPulse(state.data.history || [], state.data.streak || {});
+    }
+  }, 1000);
+}
 
 function transactionItem(item) {
   const row = document.createElement('article');
   row.className = 'transaction-item transaction-clickable';
   row.tabIndex = 0;
   row.setAttribute('role', 'button');
-  row.setAttribute('aria-label', 'Open transaction receipt');
+  row.setAttribute('aria-label', `Open ${gameLabel(item.game)} receipt for ${coins(item.amount)} coins`);
+  row.dataset.eventId = item.id || '';
   row.style.setProperty('--item-delay', `${Math.min(5, Math.random() * 5) * 45}ms`);
   const icon = document.createElement('span');
   icon.className = `transaction-icon ${item.game === 'spin' ? 'spin' : 'daily'}`;
@@ -163,7 +209,7 @@ function transactionItem(item) {
   const copy = document.createElement('span');
   copy.className = 'transaction-copy';
   const title = document.createElement('b');
-  title.textContent = item.game === 'spin' ? 'Cosmic reel spin' : 'Daily vault claim';
+  title.textContent = gameLabel(item.game);
   const details = document.createElement('small');
   details.textContent = `${relative(item.created_at)} · server confirmed`;
   copy.append(title, details);
@@ -185,17 +231,16 @@ function transactionItem(item) {
 function renderTransactions(selector, items = [], limit = Infinity) {
   const node = $(selector);
   if (!node) return;
-  const query = state.transactionSearch.trim().toLowerCase();
-  const visible = items.filter((item) => {
-    const modeMatch = state.transactionFilter === 'all' || item.game === state.transactionFilter;
-    const text = `${item.game || ''} ${item.amount || ''} ${item.created_at || ''}`.toLowerCase();
-    return modeMatch && (!query || text.includes(query));
-  });
+  const visible = visibleTransactions(items);
+  if (selector === '#history') {
+    setText('#ledger-result-count', visible.length ? `${visible.length} matching event${visible.length === 1 ? '' : 's'}` : 'No matching events');
+    setText('#ledger-total', `${coins(visible.reduce((sum, item) => sum + (Number(item.amount) || 0), 0))} coins in view`);
+  }
   node.replaceChildren();
   if (!visible.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = '<span>◌</span><b>No matching transactions</b><small>Verified rewards will appear here after your next claim.</small>';
+    empty.innerHTML = '<span>◌</span><b>No matching transactions</b><small>Try another search, range, or filter.</small>';
     node.append(empty);
     return;
   }
@@ -269,6 +314,7 @@ function renderStreak(streak = {}) {
   const best = Number(streak.best) || 0;
   setText('#streak-message', current ? `${current} day${current === 1 ? '' : 's'} on fire` : 'Start your streak');
   setText('#streak-detail', current ? `Best run: ${best} days. Keep the chain alive.` : 'Claim your daily reward to build momentum.');
+  setText('#best', best);
   animateNumber('#streak-ring-value', current, (value) => Math.round(value));
   const next = current < 3 ? 3 : current < 7 ? 7 : current + 7;
   setText('#next-milestone', `${next} day streak`);
@@ -298,6 +344,46 @@ function renderInsights(history = [], cooldowns = {}) {
     setText('#next-window-detail', next[0] === 'spin' ? 'Cosmic spin unlocks next.' : 'Daily vault unlocks next.');
   }
 }
+function renderPulse(history = [], streak = {}) {
+  const node = $('#activity-bars');
+  if (!node) return;
+  const now = new Date();
+  const days = Array.from({ length: 7 }, (_, offset) => {
+    const date = new Date(now);
+    date.setHours(12, 0, 0, 0);
+    date.setDate(now.getDate() - (6 - offset));
+    const key = dateKey(date);
+    const events = history.filter((item) => dateKey(item.created_at) === key);
+    return { date, key, count: events.length, amount: events.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) };
+  });
+  const max = Math.max(...days.map((day) => day.amount), 1);
+  node.replaceChildren();
+  days.forEach((day, index) => {
+    const column = document.createElement('div');
+    column.className = `activity-bar ${day.count ? 'has-activity' : ''}`;
+    column.style.setProperty('--bar-delay', `${index * 45}ms`);
+    column.title = `${day.count} verified event${day.count === 1 ? '' : 's'} · ${coins(day.amount)} coins`;
+    column.setAttribute('aria-label', column.title);
+    const fill = document.createElement('i');
+    fill.style.height = `${day.amount ? Math.max(16, (day.amount / max) * 100) : 7}%`;
+    const count = document.createElement('b');
+    count.textContent = day.count || '';
+    const label = document.createElement('small');
+    label.textContent = day.date.toLocaleDateString([], { weekday: 'short' }).slice(0, 2);
+    column.append(fill, count, label);
+    node.append(column);
+  });
+  const total = history.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const activeDays = days.filter((day) => day.count).length;
+  const score = Math.min(100, activeDays * 10 + Math.min(30, history.length * 3) + Math.min(35, (Number(streak.current) || 0) * 5) + (history.length ? 10 : 0));
+  const scoreRing = $('#pulse-score-ring');
+  if (scoreRing) scoreRing.style.setProperty('--pulse-progress', score);
+  animateNumber('#pulse-score', score, (value) => Math.round(value), 550);
+  setText('#pulse-total', coins(total));
+  setText('#pulse-active-days', `${activeDays}/7`);
+  setText('#pulse-message', score >= 75 ? 'Excellent momentum' : score >= 40 ? 'Your rhythm is building' : 'Start your next run');
+  setText('#pulse-detail', history.length ? `${history.length} recent verified event${history.length === 1 ? '' : 's'} shaping this pulse.` : 'Your first verified claim will start the pulse.');
+}
 function updateLiveTicker(history = []) {
   const node = $('#live-ticker');
   if (!node) return;
@@ -321,21 +407,62 @@ function updateLiveTicker(history = []) {
 function openTransactionDetail(item) {
   const dialog = $('#transaction-detail');
   if (!dialog) return;
+  state.selectedTransaction = item;
   const spin = item.game === 'spin';
-  const when = parseTimestamp(item.created_at);
-  setText('#transaction-detail-title', spin ? 'Cosmic spin receipt' : 'Daily vault receipt');
+  setText('#transaction-detail-title', `${gameLabel(item.game)} receipt`);
   setText('#transaction-detail-copy', spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
   setText('#transaction-detail-amount', `+${coins(item.amount)} COINS`);
-  setText('#transaction-detail-type', spin ? 'Cosmic spin' : 'Daily vault');
-  setText('#transaction-detail-time', when && !Number.isNaN(when.getTime()) ? when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'Recently');
+  setText('#transaction-detail-type', gameLabel(item.game));
+  setText('#transaction-detail-time', formatDate(item.created_at));
   setText('#transaction-detail-id', item.id ? String(item.id).slice(0, 18) : 'Server event');
+  const copyButton = $('#copy-transaction-ref');
+  if (copyButton) copyButton.disabled = !item.id;
   const icon = $('#transaction-detail-icon');
   if (icon) { icon.textContent = spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); }
   if (dialog.showModal) dialog.showModal();
 }
+async function copyTransactionReference() {
+  const reference = state.selectedTransaction?.id;
+  if (!reference) { showToast('This receipt has no public reference.', true); return; }
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(String(reference));
+    showToast('Receipt reference copied');
+  } catch (_) {
+    try {
+      const input = document.createElement('textarea');
+      input.value = reference;
+      input.style.position = 'fixed'; input.style.opacity = '0';
+      document.body.append(input); input.select();
+      const copied = document.execCommand?.('copy');
+      input.remove();
+      if (!copied) throw new Error('copy unavailable');
+      showToast('Receipt reference copied');
+    } catch (__) {
+      showToast('Copy is unavailable in this browser.', true);
+    }
+  }
+}
+function downloadReceipt() {
+  const item = state.selectedTransaction;
+  if (!item) return;
+  const receipt = {
+    event_id: item.id || null,
+    game: gameLabel(item.game),
+    amount: Number(item.amount) || 0,
+    recorded_at: item.created_at || null,
+    verification: 'server-confirmed',
+  };
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([JSON.stringify(receipt, null, 2)], { type: 'application/json' }));
+  link.download = `summon-receipt-${String(item.id || 'event').slice(0, 24)}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showToast('Receipt saved locally');
+}
 function downloadHistory() {
-  const history = state.data?.history || [];
-  if (!history.length) { showToast('There are no transactions to export.', true); return; }
+  const history = visibleTransactions(state.data?.history || []);
+  if (!history.length) { showToast('There are no matching transactions to export.', true); return; }
   const rows = [['event_id', 'game', 'amount', 'created_at'], ...history.map((item) => [item.id || '', item.game || '', item.amount || 0, item.created_at || ''])];
   const csv = rows.map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n');
   const link = document.createElement('a');
@@ -343,7 +470,7 @@ function downloadHistory() {
   link.download = `summon-ledger-${new Date().toISOString().slice(0, 10)}.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
-  showToast('Ledger export prepared');
+  showToast(`${history.length} ledger event${history.length === 1 ? '' : 's'} exported`);
 }
 function render(data) {
   setGuestMode(false);
@@ -383,10 +510,14 @@ function render(data) {
   renderSparkline(history);
   renderStreak(streak);
   renderInsights(history, data.cooldowns || {});
+  renderPulse(history, streak);
   updateLiveTicker(history);
+  startCooldownTicker();
 }
 function renderPublic(data) {
   setGuestMode(true);
+  clearInterval(state.cooldownTimer);
+  state.cooldownTimer = null;
   state.data = data;
   const catalogue = data.catalogue || {};
   setText('#welcome-copy', 'Explore the public catalogue and see who leads the world.');
@@ -511,19 +642,48 @@ function toggleTheme() {
   localStorage.setItem('summon-theme', next);
   setText('#theme-icon', next === 'light' ? '☀' : '☾');
 }
+function setupRevealObserver() {
+  const items = $$('.reveal');
+  if (!('IntersectionObserver' in window) || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    items.forEach((item) => item.classList.add('is-visible'));
+    return;
+  }
+  const observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('is-visible');
+      observer.unobserve(entry.target);
+    }
+  }), { threshold: 0.12 });
+  items.forEach((item) => observer.observe(item));
+}
 
 $$('[data-go]').forEach((button) => button.addEventListener('click', () => { haptic(); navigate(button.dataset.go); }));
 $$('[data-game]').forEach((button) => button.addEventListener('click', () => play(button.dataset.game)));
+function refreshLedgerView() {
+  renderTransactions('#recent', state.data?.history || [], 4);
+  renderTransactions('#history', state.data?.history || []);
+}
 $$('[data-transaction-filter]').forEach((button) => button.addEventListener('click', () => {
   state.transactionFilter = button.dataset.transactionFilter || 'all';
   $$('[data-transaction-filter]').forEach((item) => item.classList.toggle('active', item === button));
-  renderTransactions('#history', state.data?.history || []);
+  refreshLedgerView();
 }));
 $('#transaction-search')?.addEventListener('input', (event) => {
   state.transactionSearch = event.target.value || '';
-  renderTransactions('#history', state.data?.history || []);
+  $('#clear-transaction-search').hidden = !state.transactionSearch;
+  refreshLedgerView();
 });
+$('#clear-transaction-search')?.addEventListener('click', () => {
+  state.transactionSearch = '';
+  const input = $('#transaction-search'); if (input) { input.value = ''; input.focus(); }
+  $('#clear-transaction-search').hidden = true;
+  refreshLedgerView();
+});
+$('#transaction-sort')?.addEventListener('change', (event) => { state.transactionSort = event.target.value || 'newest'; refreshLedgerView(); });
+$('#transaction-range')?.addEventListener('change', (event) => { state.transactionRange = event.target.value || 'all'; refreshLedgerView(); });
 $('#export-history')?.addEventListener('click', downloadHistory);
+$('#copy-transaction-ref')?.addEventListener('click', copyTransactionReference);
+$('#download-transaction-receipt')?.addEventListener('click', downloadReceipt);
 $('#close-transaction')?.addEventListener('click', () => $('#transaction-detail')?.close());
 $('#close-transaction-action')?.addEventListener('click', () => $('#transaction-detail')?.close());
 $('#transaction-detail')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
@@ -549,6 +709,10 @@ function setPalette(open) {
 async function runPaletteAction(action) {
   if (action === 'theme') toggleTheme();
   else if (action === 'sync') await refreshDashboard();
+  else if (action === 'search') {
+    navigate('arcade');
+    setTimeout(() => $('#transaction-search')?.focus(), 0);
+  } else if (action === 'export') downloadHistory();
   else navigate(action);
 }
 $$('[data-close-palette]').forEach((node) => node.addEventListener('click', () => setPalette(false)));
@@ -566,7 +730,13 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') { setPalette(false); $('#transaction-detail')?.close(); $('#reward')?.close(); return; }
   const target = event.target;
   const typing = target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
-  const shortcut = { h: 'home', a: 'arcade', p: 'progress', r: 'sync', t: 'theme' }[key];
+  if (!typing && key === '/' && !state.guest) {
+    event.preventDefault();
+    navigate('arcade');
+    setTimeout(() => $('#transaction-search')?.focus(), 0);
+    return;
+  }
+  const shortcut = { h: 'home', a: 'arcade', p: 'progress', r: 'sync', t: 'theme', e: 'export' }[key];
   if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey && shortcut) {
     event.preventDefault();
     runPaletteAction(shortcut);
@@ -586,5 +756,6 @@ const savedTheme = localStorage.getItem('summon-theme');
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 setText('#theme-icon', document.documentElement.dataset.theme === 'light' ? '☀' : '☾');
 setupTelegram();
+setupRevealObserver();
 navigate(initData && ['home', 'arcade', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
 load().catch(() => {});
