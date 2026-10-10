@@ -314,7 +314,9 @@ function updateLiveTicker(history = []) {
     index = (index + 1) % messages.length;
   };
   paint();
-  state.tickerTimer = setInterval(paint, 4800);
+  if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    state.tickerTimer = setInterval(paint, 4800);
+  }
 }
 function openTransactionDetail(item) {
   const dialog = $('#transaction-detail');
