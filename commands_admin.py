@@ -1,13 +1,11 @@
 from storage import connect as db_connect
-import base64
-import os
-import aiohttp
-from pathlib import Path
 import string
 import random
-import sqlite3
 import logging
+import shlex
+import time
 from datetime import datetime
+from html import escape
 
 from telegram import (
     InlineKeyboardButton,
@@ -32,7 +30,7 @@ from database import (
     get_streak, update_streak,
 )
 from commands_user import check_ban, send_character_media
-from media_urls import require_character_image_url
+from media_urls import require_character_image_url, telegram_media_reference
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +38,16 @@ logger = logging.getLogger(__name__)
 
 def is_owner(user_id: int) -> bool:
     return user_id == OWNER_ID
+
+
+def has_sudo_privileges(user_id: int) -> bool:
+    """Return whether a user has owner-level or delegated sudo access.
+
+    The owner is intentionally not required to appear in ``sudo_users``.  The
+    owner is the source of truth for full access, while that table contains
+    only delegated administrators.
+    """
+    return is_owner(user_id) or is_sudo(user_id)
 
 
 RARITY_DISPLAY = {
@@ -56,11 +64,8 @@ RARITY_DISPLAY = {
 # SUDO CHECK
 # ==========================
 def check_sudo(update: Update):
-    """Returns True if user is owner or sudo."""
-    user_id = update.effective_user.id
-    if user_id == OWNER_ID or is_sudo(user_id):
-        return True
-    return False
+    """Return whether the effective user is the owner or a sudo admin."""
+    return has_sudo_privileges(update.effective_user.id)
 
 
 async def _deny(update):
@@ -230,12 +235,353 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-# ====== TEMP STORAGE ======
-PENDING_UPLOADS = {}
-COUNTER = {"n": 0}
+# ==========================
+# /UPLOAD COMMAND
+# ==========================
+def _next_character_id(cursor) -> str:
+    """Return the first unused numeric character ID."""
+    cursor.execute("SELECT id FROM characters")
+    existing_ids = set()
+    for row in cursor.fetchall():
+        try:
+            existing_ids.add(int(row[0]))
+        except (TypeError, ValueError):
+            continue
 
-# Character uploads are URL-only. Use /add and /update with a verified
-# https://files.catbox.moe/... or https://i.ibb.co/... image URL.
+    next_number = 1
+    while next_number in existing_ids:
+        next_number += 1
+    return f"{next_number:02d}"
+
+
+_CHARACTER_WIZARD_KEY = "character_upload_wizard"
+_CHARACTER_WIZARD_HANDLED_KEY = "character_upload_wizard_handled"
+_CHARACTER_WIZARD_TIMEOUT = 15 * 60
+
+
+def _telegram_media_from_message(message):
+    """Return ``(media_type, file_id)`` for Telegram media in a message.
+
+    Telegram can deliver an upload as a photo, video, animation, or as a
+    document with an image/video MIME type.  The defensive ``getattr`` calls
+    also make this work with older PTB message objects and with reply stubs in
+    tests.
+    """
+    if message is None:
+        return None, None
+    photos = getattr(message, "photo", None) or ()
+    if photos:
+        photo = photos[-1]
+        file_id = getattr(photo, "file_id", None)
+        if file_id:
+            return "photo", file_id
+    for attribute, media_type in (("video", "video"), ("animation", "animation"), ("video_note", "video")):
+        media = getattr(message, attribute, None)
+        file_id = getattr(media, "file_id", None) if media else None
+        if file_id:
+            return media_type, file_id
+
+    document = getattr(message, "document", None)
+    document_id = getattr(document, "file_id", None) if document else None
+    if document_id:
+        mime_type = str(getattr(document, "mime_type", "") or "").lower()
+        file_name = str(getattr(document, "file_name", "") or "").lower()
+        if mime_type.startswith(("image/", "video/")) or file_name.endswith((".gif", ".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm")):
+            return "document", document_id
+    return None, None
+
+
+def _telegram_media_from_update(update):
+    """Find media on the command itself or on the message it replies to."""
+    message = update.effective_message
+    for candidate in (message, getattr(message, "reply_to_message", None)):
+        media = _telegram_media_from_message(candidate)
+        if media[1]:
+            return media
+    return None, None
+
+
+def _message_command_args(message) -> list[str]:
+    """Extract arguments from text or a media caption when PTB has no args."""
+    raw = getattr(message, "text", None) or getattr(message, "caption", None) or ""
+    raw = str(raw).strip()
+    if not raw or not raw.startswith("/"):
+        return []
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        parts = raw.split()
+    return parts[1:] if parts else []
+
+
+def _command_name(message) -> str:
+    raw = str(getattr(message, "text", None) or getattr(message, "caption", None) or "")
+    if not raw.startswith("/"):
+        return ""
+    return raw.split()[0].split("@", 1)[0].lstrip("/").lower()
+
+
+def _command_args(update, context) -> list[str]:
+    args = list(getattr(context, "args", None) or ())
+    return args or _message_command_args(update.effective_message)
+
+
+def _normalise_character_text(value: object) -> str:
+    return str(value or "").replace("-", " ").strip().title()
+
+
+def _rarity_from_value(value: object):
+    try:
+        return RARITY_DISPLAY[int(str(value).strip())]
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _metadata_from_args(args: list[str]):
+    """Parse ``name anime rarity`` while allowing spaces in the anime name."""
+    if len(args) < 3:
+        return None
+    rarity = _rarity_from_value(args[-1])
+    if rarity is None:
+        return None
+    name = _normalise_character_text(args[0])
+    anime = _normalise_character_text(" ".join(args[1:-1]))
+    if not name or not anime:
+        return None
+    return name, anime, rarity
+
+
+def _seed_wizard_metadata(state: dict, args: list[str]) -> None:
+    """Keep any metadata supplied with the command while the wizard continues."""
+    if not args:
+        return
+    if not state.get("name"):
+        state["name"] = _normalise_character_text(args[0])
+    if len(args) >= 2 and not state.get("anime"):
+        anime_args = args[1:-1] if len(args) >= 3 else args[1:]
+        state["anime"] = _normalise_character_text(" ".join(anime_args))
+    if len(args) >= 3:
+        rarity = _rarity_from_value(args[-1])
+        if rarity:
+            state["rarity"] = rarity
+
+
+def _wizard_prompt(state: dict) -> str:
+    if not state.get("media_type"):
+        return (
+            "🧙 <b>Character upload wizard</b>\n\n"
+            "<b>Step 1/4:</b> Reply to this message with a photo, video, GIF, "
+            "or supported media document.\n\n"
+            "You can also send the media with the complete caption:\n"
+            "<code>/upload Name Anime 5</code>\n\n"
+            "Send <code>/cancelupload</code> to stop."
+        )
+    if not state.get("name"):
+        return "🧙 <b>Step 2/4:</b> Send the character name.\nExample: <code>Yelan</code>"
+    if not state.get("anime"):
+        return "🧙 <b>Step 3/4:</b> Send the anime name.\nExample: <code>Genshin Impact</code>"
+    if not state.get("rarity"):
+        return "🧙 <b>Step 4/4:</b> Send the rarity ID from <code>1</code> to <code>18</code>."
+    return ""
+
+
+def _new_wizard_state(update, command_name: str) -> dict:
+    return {
+        "chat_id": update.effective_chat.id if update.effective_chat else None,
+        "user_id": update.effective_user.id if update.effective_user else None,
+        "command": command_name,
+        "created_at": time.time(),
+    }
+
+
+async def _start_character_wizard(update, context, command_name: str, args=None, media=None):
+    state = _new_wizard_state(update, command_name)
+    if media and media[1]:
+        state["media_type"], state["file_id"] = media
+    _seed_wizard_metadata(state, list(args or ()))
+    context.user_data[_CHARACTER_WIZARD_KEY] = state
+    message = update.effective_message
+    await message.reply_text(_wizard_prompt(state), parse_mode=ParseMode.HTML)
+    return True
+
+
+def _consume_wizard_handled(context) -> bool:
+    return bool(context.user_data.pop(_CHARACTER_WIZARD_HANDLED_KEY, False))
+
+
+async def _store_telegram_character(update, context, state: dict) -> bool:
+    """Persist one wizard result and send it back to the originating chat."""
+    media_type = state.get("media_type")
+    file_id = state.get("file_id")
+    char_name = _normalise_character_text(state.get("name"))
+    anime_name = _normalise_character_text(state.get("anime"))
+    rarity = state.get("rarity")
+    if not media_type or not file_id or not char_name or not anime_name or not rarity:
+        return False
+
+    user_id = update.effective_user.id
+    media_reference = telegram_media_reference(media_type, file_id)
+    char_id = None
+    conn = db_connect(DB_NAME)
+    try:
+        cursor = conn.cursor()
+        char_id = _next_character_id(cursor)
+        cursor.execute(
+            "INSERT INTO characters (id, name, anime, rarity, image_url) VALUES (?, ?, ?, ?, ?)",
+            (char_id, char_name, anime_name, rarity, media_reference),
+        )
+        conn.commit()
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("Character upload failed for user %s", user_id)
+        await update.effective_message.reply_text(
+            f"❌ Character upload failed: {escape(str(exc))}", parse_mode=ParseMode.HTML,
+        )
+        return False
+    finally:
+        conn.close()
+
+    caption = (
+        "✅ <b>Character uploaded successfully</b>\n\n"
+        f"🆔 <b>ID:</b> <code>{escape(char_id)}</code>\n"
+        f"👤 <b>Name:</b> {escape(char_name)}\n"
+        f"🎌 <b>Anime:</b> {escape(anime_name)}\n"
+        f"✨ <b>Rarity:</b> {escape(rarity)}\n"
+        f"📂 <b>Media:</b> {escape(media_type.title())}"
+    )
+    archive_chat = DB_CHANNEL_ID
+    current_chat = update.effective_chat.id if update.effective_chat else None
+    if archive_chat and archive_chat != current_chat:
+        try:
+            await send_character_media(context.bot, archive_chat, media_reference, caption)
+        except Exception:
+            logger.warning("Could not archive character %s", char_id, exc_info=True)
+    await send_character_media(context.bot, current_chat, media_reference, caption)
+    return True
+
+
+async def upload_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Upload media directly or start a guided metadata wizard.
+
+    These all work:
+    ``/upload Name Anime 5`` as a reply to media, the same command as a media
+    caption, or plain ``/upload`` followed by the wizard prompts.
+    """
+    if _consume_wizard_handled(context):
+        return
+    if not has_sudo_privileges(update.effective_user.id):
+        return await update.effective_message.reply_text("❌ You do not have Sudo privileges!")
+
+    args = _command_args(update, context)
+    media = _telegram_media_from_update(update)
+    if len(args) > 3:
+        return await update.effective_message.reply_text(
+            "❌ Too many arguments. Use <code>/upload Name Anime Rarity-ID</code> "
+            "or send <code>/upload</code> to start the wizard.", parse_mode=ParseMode.HTML,
+        )
+    metadata = _metadata_from_args(args)
+    if media[1] and metadata:
+        state = _new_wizard_state(update, "upload")
+        state.update({"media_type": media[0], "file_id": media[1], "name": metadata[0], "anime": metadata[1], "rarity": metadata[2]})
+        return await _store_telegram_character(update, context, state)
+    return await _start_character_wizard(update, context, "upload", args=args, media=media)
+
+
+async def character_upload_wizard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Consume wizard replies and media captions before normal command routing."""
+    state = context.user_data.get(_CHARACTER_WIZARD_KEY)
+    message = update.effective_message
+    if not state:
+        # PTB versions differ in how CommandHandler treats media captions.
+        # Route a captioned /upload or /add ourselves so the media workflow is
+        # reliable even when the command is not a separate reply message.
+        command = _command_name(message)
+        media = _telegram_media_from_message(message)
+        if media[1] and command in {"upload", "add"}:
+            if command == "upload":
+                await upload_character(update, context)
+            else:
+                await add_character(update, context)
+            context.user_data[_CHARACTER_WIZARD_HANDLED_KEY] = True
+        return
+    if not message:
+        return
+    if state.get("chat_id") != (update.effective_chat.id if update.effective_chat else None) or state.get("user_id") != update.effective_user.id:
+        return
+    if time.time() - float(state.get("created_at", 0)) > _CHARACTER_WIZARD_TIMEOUT:
+        context.user_data.pop(_CHARACTER_WIZARD_KEY, None)
+        await message.reply_text("⌛ This upload wizard expired. Send /upload or /add to start again.")
+        context.user_data[_CHARACTER_WIZARD_HANDLED_KEY] = True
+        return
+
+    media = _telegram_media_from_message(message)
+    if not media[1]:
+        media = _telegram_media_from_message(getattr(message, "reply_to_message", None))
+    if media[1]:
+        state["media_type"], state["file_id"] = media
+        caption_args = _message_command_args(message)
+        metadata = _metadata_from_args(caption_args)
+        if metadata:
+            state.update({"name": metadata[0], "anime": metadata[1], "rarity": metadata[2]})
+        # A plain media reply is not seen by the normal text catch-all. Only
+        # mark captioned commands as handled so they do not run twice.
+        if _command_name(message) in {"upload", "add"}:
+            context.user_data[_CHARACTER_WIZARD_HANDLED_KEY] = True
+        if state.get("name") and state.get("anime") and state.get("rarity"):
+            if await _store_telegram_character(update, context, state):
+                context.user_data.pop(_CHARACTER_WIZARD_KEY, None)
+        else:
+            await message.reply_text(_wizard_prompt(state), parse_mode=ParseMode.HTML)
+        return
+
+    text = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if not text or text.startswith("/"):
+        return
+    context.user_data[_CHARACTER_WIZARD_HANDLED_KEY] = True
+    words = text.split()
+    if not state.get("media_type"):
+        metadata = _metadata_from_args(words)
+        if metadata:
+            state.update({"name": metadata[0], "anime": metadata[1], "rarity": metadata[2]})
+        elif not state.get("name"):
+            state["name"] = _normalise_character_text(text)
+        elif not state.get("anime"):
+            state["anime"] = _normalise_character_text(text)
+        elif not state.get("rarity"):
+            state["rarity"] = _rarity_from_value(text)
+    elif not state.get("name"):
+        metadata = _metadata_from_args(words)
+        if metadata:
+            state.update({"name": metadata[0], "anime": metadata[1], "rarity": metadata[2]})
+        else:
+            state["name"] = _normalise_character_text(text)
+    elif not state.get("anime"):
+        state["anime"] = _normalise_character_text(text)
+    elif not state.get("rarity"):
+        state["rarity"] = _rarity_from_value(text)
+        if not state["rarity"]:
+            await message.reply_text("❌ Rarity must be a number from 1 to 18. Try again.")
+            return
+
+    if state.get("media_type") and state.get("name") and state.get("anime") and state.get("rarity"):
+        if await _store_telegram_character(update, context, state):
+            context.user_data.pop(_CHARACTER_WIZARD_KEY, None)
+    else:
+        await message.reply_text(_wizard_prompt(state), parse_mode=ParseMode.HTML)
+
+
+async def cancel_character_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop(_CHARACTER_WIZARD_KEY, None):
+        context.user_data.pop(_CHARACTER_WIZARD_HANDLED_KEY, None)
+        return await update.effective_message.reply_text("✅ Character upload cancelled.")
+    return await update.effective_message.reply_text("ℹ️ No character upload wizard is active.")
+
+
+# Character metadata additions use approved external URLs. Use /addchar (or
+# /add) and /update when a URL is already available.
 
 async def trigger_spawn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1. സുരക്ഷാ ചെക്ക് (Sudo/Owner ആണോ എന്ന് പരിശോധിക്കുന്നു)
@@ -637,7 +983,7 @@ async def addsudo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sudolist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    if not is_sudo(user_id):
+    if not has_sudo_privileges(user_id):
         return await update.message.reply_text("❌ You do not have permission to view the Sudo List!")
 
     conn = db_connect(DB_NAME)
@@ -767,25 +1113,51 @@ async def sudo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # /add COMMAND (SUDO)
 # ==========================
 async def add_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Create a character with a direct Catbox or ImgBB HTTPS image URL.
+    """Add a character by URL or use the same media wizard as ``/upload``.
 
-    Usage: /add <name> <anime> <rarity-id> <image-url>
+    ``/addchar`` keeps the approved HTTPS URL form. ``/add`` additionally
+    accepts replied/captioned Telegram media and can start the guided wizard.
     """
-    if not is_sudo(update.effective_user.id):
-        return await update.message.reply_text("❌ You do not have Sudo privileges!")
-    if len(context.args) != 4:
-        return await update.message.reply_text(
-            "💡 Usage: <code>/add &lt;name&gt; &lt;anime&gt; &lt;rarity-id&gt; &lt;Catbox-or-ImgBB-HTTPS-URL&gt;</code>",
+    if _consume_wizard_handled(context):
+        return
+    if not has_sudo_privileges(update.effective_user.id):
+        return await update.effective_message.reply_text("❌ You do not have Sudo privileges!")
+
+    args = _command_args(update, context)
+    command = _command_name(update.effective_message)
+    media = _telegram_media_from_update(update)
+    if media[1] or command == "add":
+        # Preserve /add's existing external-URL mode when four arguments are
+        # supplied, while making /add and /upload share the media workflow.
+        if media[1] or len(args) <= 3:
+            if len(args) > 3:
+                return await update.effective_message.reply_text(
+                    "❌ Too many arguments. Use <code>/add Name Anime Rarity-ID</code> "
+                    "or use the four-argument HTTPS URL form.", parse_mode=ParseMode.HTML,
+                )
+            metadata = _metadata_from_args(args)
+            if media[1] and metadata:
+                state = _new_wizard_state(update, "add")
+                state.update({"media_type": media[0], "file_id": media[1], "name": metadata[0], "anime": metadata[1], "rarity": metadata[2]})
+                return await _store_telegram_character(update, context, state)
+            return await _start_character_wizard(update, context, "add", args=args, media=media)
+
+    if len(args) != 4:
+        return await update.effective_message.reply_text(
+            "💡 <b>Choose a mode:</b>\n"
+            "• Reply to media with <code>/add Name Anime Rarity-ID</code>\n"
+            "• Send <code>/add</code> for the guided wizard\n"
+            "• Use <code>/addchar Name Anime Rarity-ID HTTPS-URL</code> for an external image",
             parse_mode=ParseMode.HTML,
         )
 
-    char_name = context.args[0].replace("-", " ").title()
-    anime_name = context.args[1].replace("-", " ").title()
+    char_name = args[0].replace("-", " ").title()
+    anime_name = args[1].replace("-", " ").title()
     try:
-        rarity = RARITY_DISPLAY[int(context.args[2])]
-        image_url = require_character_image_url(context.args[3])
+        rarity = RARITY_DISPLAY[int(args[2])]
+        image_url = require_character_image_url(args[3])
     except (ValueError, KeyError) as exc:
-        return await update.message.reply_text(f"❌ {exc}")
+        return await update.effective_message.reply_text(f"❌ {exc}")
 
     conn = db_connect(DB_NAME)
     try:
@@ -817,7 +1189,7 @@ async def add_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def update_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Update character metadata or its approved external image URL."""
-    if not is_sudo(update.effective_user.id):
+    if not has_sudo_privileges(update.effective_user.id):
         return await update.message.reply_text("❌ You do not have Sudo privileges!")
     if len(context.args) < 3:
         return await update.message.reply_text(
@@ -868,7 +1240,7 @@ async def update_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 3️⃣ DELETE CHARACTER (/deletechar)
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_sudo(user_id):
+    if not has_sudo_privileges(user_id):
         return await update.message.reply_text("❌ You do not have Sudo privileges!")
 
     if not context.args:

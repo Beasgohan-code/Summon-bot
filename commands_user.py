@@ -1,9 +1,9 @@
 from storage import connect as db_connect
-import sqlite3
 import asyncio
 import logging
 import random
 import time
+from html import escape
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -31,6 +31,7 @@ from database import (
     ensure_user, get_balance, add_balance, remove_balance,
     is_sudo, add_sudo_user, remove_sudo_user,
     owns_character, add_to_collection, remove_from_collection,
+    transfer_balance, transfer_collection,
     get_user_collection, get_user_unique_count,
     get_character, get_random_character, get_character_count,
     get_user, get_top_anime, get_total_groups,
@@ -46,7 +47,10 @@ from database import (
     MARKET_POOL_SIZE, MARKET_REFRESH_PRICE, MARKET_SELL_BACK_PERCENT,
 )
 from font import stylize_block, FONT_MAPS
-from media_urls import is_allowed_character_image_url
+from media_urls import (
+    is_allowed_character_image_url,
+    parse_telegram_media_reference,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,34 +71,47 @@ def f(text: str, user_id: int = None) -> str:
 
 
 async def send_character_media(bot, chat_id, image_url, caption, reply_markup=None):
-    """Send an approved external character image or a text fallback.
+    """Send a character's approved URL or Telegram media reference.
 
-    Character media is intentionally URL-only. Telegram file IDs, typed media
-    prefixes, and arbitrary hosts are never sent from this path.
+    ``telegram:<type>:<file_id>`` references are created by ``/upload`` and
+    contain no local path or bot token. They let uploaded photos, videos, and
+    GIFs survive restarts without requiring a second hosting service.
     """
-    if not is_allowed_character_image_url(image_url):
-        return await bot.send_message(
-            chat_id=chat_id,
-            text=caption,
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
+    telegram_media = parse_telegram_media_reference(image_url)
     try:
-        return await bot.send_photo(
-            chat_id=chat_id,
-            photo=image_url,
-            caption=caption,
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
+        if telegram_media:
+            media_type, file_id = telegram_media
+            sender = {
+                "photo": bot.send_photo,
+                "video": bot.send_video,
+                "animation": bot.send_animation,
+                "document": bot.send_document,
+            }[media_type]
+            return await sender(
+                chat_id=chat_id,
+                **{media_type: file_id},
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+
+        if is_allowed_character_image_url(image_url):
+            return await bot.send_photo(
+                chat_id=chat_id,
+                photo=image_url,
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
     except Exception as exc:
-        logger.warning("send_character_media failed for approved image URL: %s", exc)
-        return await bot.send_message(
-            chat_id=chat_id,
-            text=caption,
-            reply_markup=reply_markup,
-            parse_mode="HTML",
-        )
+        logger.warning("send_character_media failed for character media: %s", exc)
+
+    return await bot.send_message(
+        chat_id=chat_id,
+        text=caption,
+        reply_markup=reply_markup,
+        parse_mode="HTML",
+    )
 
        
 # BAN CHECK
@@ -455,12 +472,10 @@ async def view_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
 
     try:
-   
         cursor.execute("SELECT COUNT(DISTINCT character_id) FROM user_collection WHERE user_id=?", (user.id,))
         coll_row = cursor.fetchone()
         collection_count = coll_row[0] if coll_row else 0
-    except sqlite3.OperationalError:
-
+    except Exception:
         collection_count = 0
         
     conn.close()
@@ -1494,25 +1509,18 @@ async def gift_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     giver_count = giver_row[0]
 
-    # 3. Target user-ne register cheyyunnu (DB-il illel)
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (target.id, target.username))
-
-    # 4. Giver-ude kayyil ninnu count kuraykkunnu / delete cheyyunnu
-    if giver_count > 1:
-        cursor.execute("UPDATE user_collection SET count = count - 1 WHERE user_id=? AND character_id=?", (giver_id, char_id))
-    else:
-        cursor.execute("DELETE FROM user_collection WHERE user_id=? AND character_id=?", (giver_id, char_id))
-
-    # 5. Receiver-ude (Target) collection-ilekk add cheyyunnu (Count +1 aക്കുന്നു)
-    cursor.execute("""
-        INSERT INTO user_collection (user_id, character_id, count)
-        VALUES (?, ?, 1)
-        ON CONFLICT(user_id, character_id)
-        DO UPDATE SET count = count + 1
-    """, (target.id, char_id))
-
-    conn.commit()
+    # MongoDB transaction moves the copy and creates the receiver's collection
+    # row atomically. Registering the recipient never changes an existing
+    # balance.
+    ensure_user(target.id, target.username, target.first_name)
     conn.close()
+    try:
+        transferred = transfer_collection(giver_id, target.id, char_id)
+    except RuntimeError:
+        logger.exception("Atomic character gift failed")
+        transferred = False
+    if not transferred:
+        return await update.message.reply_text("❌ The character transfer could not be completed safely. Please try again.")
 
     # 6. Aa randu varikal mathram blockquote-il ulla premium layout!
     gift_text = (
@@ -1522,11 +1530,22 @@ async def gift_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Your character has been successfully transferred!"
     )
 
-    # 7. Character media send cheyyunnu
+    # 7. Keep the original group/private confirmation and also notify the
+    # recipient directly. A blocked bot chat must not roll back a completed
+    # database transfer.
     try:
         await send_character_media(context.bot, update.effective_chat.id, media_id, gift_text)
     except Exception:
         await update.message.reply_text(gift_text, parse_mode="HTML")
+    try:
+        recipient_text = (
+            "🎁 <b>You received a character gift!</b>\n\n"
+            f"<blockquote>🎴 <b>{escape(char_name)}</b> (ID: <code>{escape(str(char_id))}</code>)\n"
+            f"👤 From: <a href='tg://user?id={giver_id}'>Summoner</a></blockquote>"
+        )
+        await send_character_media(context.bot, target.id, media_id, recipient_text)
+    except Exception:
+        logger.info("Could not send gift notification to user %s", target.id, exc_info=True)
 
 # ==========================
 # /PAY
@@ -1578,11 +1597,16 @@ async def pay_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return await update.message.reply_text("❌ Target user hasn't started the bot yet!")
 
-    # പൈസ അങ്ങോട്ടും ഇങ്ങോട്ടും മാറ്റുന്നു (Transaction)
-    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_id))
-    conn.commit()
+    # Move both balances inside one MongoDB transaction. A failed debit never
+    # leaves the receiver credited.
     conn.close()
+    try:
+        transferred = transfer_balance(user_id, target_id, amount)
+    except RuntimeError:
+        logger.exception("Atomic coin transfer failed")
+        transferred = False
+    if not transferred:
+        return await update.message.reply_text("❌ The payment could not be completed safely. Please try again.")
 
     await update.message.reply_text(
         f"💸 <b>Transaction Successful!</b>\n\n"
@@ -1879,7 +1903,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     if 'send_character_media' in globals():
-        await update.message.reply_text(
+        await send_character_media(
             bot=context.bot,
             chat_id=update.effective_chat.id,
             image_url=image_url,
@@ -2613,30 +2637,26 @@ async def font_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         
         try:
-            if 'send' in globals():
-                return await update.message.reply_text(update, text, reply_markup=kb)
-            else:
-                return await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            return await update.message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+            )
         except Exception:
+            logger.exception("Font menu reply failed")
             return
 
     # /font mono എന്നിങ്ങനെ ടൈപ്പ് ചെയ്ത് മാറ്റാൻ നോക്കുമ്പോൾ
     font = context.args[0].lower()
     if font not in allowed_fonts:
         error_text = "❌ <b>Unknown Font Style!</b>\n\nChoose from: <code>mono, fraktur, script, double</code>"
-        if 'send' in globals():
-            return await update.message.reply_text(update, error_text)
-        else:
-            return await update.message.reply_text(error_text, parse_mode=ParseMode.HTML)
+        return await update.message.reply_text(error_text, parse_mode=ParseMode.HTML)
 
     if 'set_font_pref' in globals():
         set_font_pref(user_id, font)
         
     success_text = f"✅ <b>Font preference successfully updated to:</b> <code>{font.upper()}</code>"
-    if 'send' in globals():
-        await update.message.reply_text(update, success_text)
-    else:
-        await update.message.reply_text(success_text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(success_text, parse_mode=ParseMode.HTML)
 
 
 # ==========================================

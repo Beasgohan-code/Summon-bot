@@ -1,0 +1,12 @@
+{
+  "name": "Summon Command Center",
+  "short_name": "Summon",
+  "description": "Animated, server-verified Summon command center",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070b16",
+  "theme_color": "#070b16",
+  "categories": ["games", "entertainment"]
+}

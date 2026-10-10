@@ -1,0 +1,3 @@
+# Optional one-shot dependency for reading a legacy PostgreSQL source.
+# The bot runtime itself is MongoDB-only and does not install this file.
+psycopg2-binary==2.9.10

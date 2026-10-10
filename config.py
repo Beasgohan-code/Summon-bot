@@ -1,9 +1,11 @@
 import random
 import os
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -33,19 +35,52 @@ OWNER_PANEL_PASSWORD = os.getenv("OWNER_PANEL_PASSWORD", "")
 
 
 # ==================== 🤖 BOT IDENTITY ====================
-BOT_USERNAME = "Summon_collection_bot"          # BotFather username
-OWNER_USERNAME = "og_gohan"                      #  username (no @)
-SUPPORT_CHAT = "https://t.me/summon_official"
-UPDATE_CHANNEL = "https://t.me/Beastxgohan"
-DB_CHANNEL_ID = -1003858966339
+BOT_USERNAME = os.getenv("BOT_USERNAME", "Summon_collection_bot").lstrip("@").strip()
+OWNER_USERNAME = os.getenv("OWNER_USERNAME", "og_gohan").lstrip("@").strip()
+SUPPORT_CHAT = os.getenv("SUPPORT_CHAT", "https://t.me/summon_official").strip()
+UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/Beastxgohan").strip()
+DB_CHANNEL_ID = int(os.getenv("DB_CHANNEL_ID", "-1003858966339"))
 
 # ==================== 💾 DATABASE ====================
-# PostgreSQL is the only production runtime database. DB_NAME remains as a
-# compatibility argument for existing helpers and is never used as a file path.
-DB_NAME = os.getenv("DATABASE_NAME", "summon_bot")
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+# MongoDB is the only runtime database.  DB_NAME is a compatibility alias for
+# legacy helper signatures; it is never interpreted as a file path or URI.
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "summon_bot").strip() or "summon_bot"
+DB_NAME = MONGO_DB_NAME
+
+# ==================== 🩺 OPERATIONS / WEB APP ====================
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+
+
+LOGGER_ID = _int_env("LOGGER_ID", 0)
+LOG_TELEGRAM_LEVEL = os.getenv("LOG_TELEGRAM_LEVEL", "WARNING").upper()
+LOG_BATCH_SECONDS = max(0.2, float(os.getenv("LOG_BATCH_SECONDS", "1.5")))
+PORT = _int_env("PORT", 8080)
+KEEPALIVE_URL = os.getenv("KEEPALIVE_URL", "https://summon-bot-wngc.onrender.com").strip()
+
+
+def _default_webhook_url() -> str:
+    parsed = urlsplit(KEEPALIVE_URL)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, "/telegram/webhook", "", ""))
+
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", _default_webhook_url()).strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+KEEPALIVE_INTERVAL_SECONDS = max(30, _int_env("KEEPALIVE_INTERVAL_SECONDS", 300))
+KEEPALIVE_TIMEOUT_SECONDS = max(2, _int_env("KEEPALIVE_TIMEOUT_SECONDS", 10))
+WATCHDOG_INTERVAL_SECONDS = max(15, _int_env("WATCHDOG_INTERVAL_SECONDS", 60))
+WATCHDOG_TIMEOUT_SECONDS = max(30, _int_env("WATCHDOG_TIMEOUT_SECONDS", 180))
+WEBAPP_ENABLED = os.getenv("WEBAPP_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+# Guest mode is deliberately read-only: public catalogue/leaderboard data is
+# available outside Telegram, while balances, collections, and rewards still
+# require valid Telegram WebApp init data.
+TELEGRAM_GUEST_MODE = os.getenv("TELEGRAM_GUEST_MODE", "true").strip().lower() not in {"0", "false", "no"}
 
 #  character spawn time
 DEFAULT_SPAWN_LIMIT = 100

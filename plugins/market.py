@@ -1,8 +1,8 @@
-from storage import connect as db_connect
-import sqlite3
+from storage import connect as db_connect, grant_premium, premium_expiry, premium_remaining_seconds, revoke_premium
+import logging
 import random
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
@@ -12,6 +12,7 @@ from config import DB_NAME, OWNER_ID, HCLAIM_COOLDOWN_HOURS, SUPPORT_GROUP_ID, G
 from commands_user import check_ban, send_character_media
 
 DB = DB_NAME
+logger = logging.getLogger(__name__)
 
 
 # ==================== ITEM CATALOG ====================
@@ -58,23 +59,10 @@ def get_conn():
 
 # ==================== DB HELPERS ====================
 def is_premium(user_id):
-    conn = get_conn()
-    row = conn.execute("""
-        SELECT 1 FROM premium
-        WHERE user_id=? AND expires_at > datetime('now')
-    """, (user_id,)).fetchone()
-    conn.close()
-    return bool(row)
+    return premium_remaining_seconds(user_id) > 0
 
 def premium_left(user_id):
-    conn = get_conn()
-    row = conn.execute("""
-        SELECT CAST((julianday(expires_at) - julianday('now')) * 24 AS INT)
-        FROM premium
-        WHERE user_id=? AND expires_at > datetime('now')
-    """, (user_id,)).fetchone()
-    conn.close()
-    return row[0] if row else 0
+    return premium_remaining_seconds(user_id) // 3600
 
 def cooldown_left(user_id, command):
     conn = get_conn()
@@ -851,30 +839,30 @@ async def premium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delta = timedelta(hours=num) if unit == "h" else timedelta(days=num) if unit == "d" else timedelta(weeks=num)
     secs = int(delta.total_seconds())
 
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO premium (user_id, expires_at, granted_at, granted_by)
-        VALUES (?, datetime('now', ?), datetime('now'), ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            expires_at = CASE WHEN expires_at > datetime('now') THEN datetime(expires_at, ?) ELSE datetime('now', ?) END
-    """, (target_id, f"+{secs} seconds", update.effective_user.id, f"+{secs} seconds", f"+{secs} seconds"))
-    conn.commit()
-    conn.close()
+    try:
+        expires_at = grant_premium(target_id, secs, update.effective_user.id)
+    except Exception:
+        logger.exception("Could not grant premium access for user %s", target_id)
+        return await update.message.reply_text("❌ Premium could not be recorded safely. Please try again.")
 
-    await update.message.reply_text(f"👑 <b>Premium Access Granted!</b>\n\n<blockquote>👤 <b>User:</b> {target_name} (<code>{target_id}</code>)\n⏳ <b>Added:</b> {duration_str}</blockquote>", parse_mode="HTML")
+    await update.message.reply_text(
+        f"👑 <b>Premium Access Granted!</b>\n\n"
+        f"<blockquote>👤 <b>User:</b> {target_name} (<code>{target_id}</code>)\n"
+        f"⏳ <b>Added:</b> {duration_str}\n"
+        f"📅 <b>Expires:</b> {expires_at} UTC</blockquote>",
+        parse_mode="HTML",
+    )
 
 # ==================== ℹ️ /pinfo (CHECK PREMIUM VALIDITY) ====================
 async def pinfo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    conn = get_conn()
-    row = conn.execute("SELECT expires_at FROM premium WHERE user_id=? AND expires_at > datetime('now')", (user_id,)).fetchone()
-    conn.close()
-
-    if not row:
+    expires_at = premium_expiry(user_id)
+    if not expires_at or premium_remaining_seconds(user_id) <= 0:
         return await update.message.reply_text("⭐ <b>Premium status:</b> <code>Not Active</code>\nContact Admin to purchase premium access!", parse_mode="HTML")
 
-    exp_time = datetime.fromisoformat(row[0].replace(" ", "T"))
+    exp_time = datetime.fromisoformat(str(expires_at).replace(" ", "T"))
+    if exp_time.tzinfo:
+        exp_time = exp_time.astimezone(timezone.utc).replace(tzinfo=None)
     time_left = exp_time - datetime.utcnow()
     days = time_left.days
     hours, remainder = divmod(time_left.seconds, 3600)
@@ -899,12 +887,14 @@ async def unpremium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_id:
         return await update.message.reply_text("💡 <b>Usage:</b> <code>/unpremium @username</code>", parse_mode="HTML")
 
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM premium WHERE user_id=?", (target_id,))
-    conn.commit()
-    conn.close()
+    try:
+        removed = revoke_premium(target_id)
+    except Exception:
+        logger.exception("Could not revoke premium access for user %s", target_id)
+        return await update.message.reply_text("❌ Premium could not be updated safely. Please try again.")
 
+    if not removed:
+        return await update.message.reply_text("ℹ️ This user does not have an active premium record.")
     await update.message.reply_text(f"🚫 <b>Premium Access Removed!</b>\n\n<blockquote>👤 <b>User:</b> {target_name} (<code>{target_id}</code>)</blockquote>", parse_mode="HTML")
 
 # ==================== REGISTER ====================

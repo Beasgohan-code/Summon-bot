@@ -1,6 +1,12 @@
+import asyncio
 import logging
+import signal
 import sys
 from datetime import datetime
+from urllib.parse import urlsplit
+
+from storage import ping as ping_database
+
 
 from telegram import Update, BotCommand
 from telegram.ext import (
@@ -13,11 +19,15 @@ from telegram.ext import (
 )	
 # ==================== CONFIG & MODULES ====================
 from config import (
-    BOT_TOKEN, OWNER_ID, BOT_USERNAME, DB_NAME, DATABASE_URL,
+    BOT_TOKEN, OWNER_ID, BOT_USERNAME, MONGO_URI, MONGO_DB_NAME,
     PRICE, HIGH_TIER, SPIN_COOLDOWN_HOURS, HCLAIM_COOLDOWN_HOURS,
     SPAM_LIMIT, DAILY_REWARD,
     ENABLE_STREAK, ENABLE_ACHIEVEMENTS, ENABLE_MARKET, ENABLE_FONT,
+    LOGGER_ID, PORT, KEEPALIVE_URL, WEBAPP_ENABLED,
+    WEBHOOK_URL, WEBHOOK_SECRET,
 )
+from health import HealthServer, HealthState, KeepAlive, Watchdog
+from logging_utils import install_telegram_log_handler, send_startup_log
 from database import init_db, ACHIEVEMENTS, STREAK_BONUS_TIERS, MARKET_POOL_SIZE, MARKET_REFRESH_PRICE
 
 from plugins.profile import profile_cmd
@@ -54,6 +64,7 @@ from commands_admin import (
     checkspawn, changetime,
     change_chance, chance_list, sudo_callback_handler,
     sudolist_command, editsudo_command, addsudo_command,
+    upload_character, character_upload_wizard_message, cancel_character_upload,
     add_character, update_character,
     removeall, removeall_callback,
     transfer, gen_code, redeem_code,
@@ -70,6 +81,7 @@ from inline_search import inline_search
 from catch_all import track_messages_and_save_group
 
 logger = logging.getLogger(__name__)
+_telegram_log_handler = None
 
 
 # ==================== POST INIT ====================
@@ -137,6 +149,18 @@ async def post_init(application: Application):
 ║  🟢  Status: ONLINE                      ║
 ╚══════════════════════════════════════════╝
     """)
+
+    # Send an immediate operational card to LOGGER_ID. This is separate from
+    # the background warning/error queue, so every clean boot is visible.
+    await send_startup_log(
+        application.bot,
+        bot_username=bot.username or BOT_USERNAME,
+        database="MongoDB",
+        port=PORT,
+        keepalive_url=KEEPALIVE_URL,
+        webapp_enabled=WEBAPP_ENABLED,
+        chat_id=LOGGER_ID,
+    )
 
     # Notify owner
     try:
@@ -228,7 +252,20 @@ def register_handlers(application: Application):
     application.add_handler(CommandHandler("sudolist", sudolist_command))
     application.add_handler(CommandHandler("addsudo", addsudo_command))
     application.add_handler(CommandHandler(["editsudo", "rmsudo"], editsudo_command))
+    # /upload and /add share the replied-media wizard. /addchar remains the
+    # approved external-HTTPS URL form, and /add keeps that form as a fallback.
+    application.add_handler(CommandHandler("upload", upload_character))
     application.add_handler(CommandHandler("addchar", add_character))
+    application.add_handler(CommandHandler("add", add_character))
+    application.add_handler(CommandHandler(["cancelupload", "canceladd"], cancel_character_upload))
+
+    # Run the wizard before the normal catch-all without changing existing
+    # group message tracking when no wizard is active.
+    wizard_media_filter = filters.TEXT | filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL
+    application.add_handler(
+        MessageHandler(wizard_media_filter, character_upload_wizard_message),
+        group=-1,
+    )
     application.add_handler(CommandHandler(["updatechar", "update"], update_character))
     application.add_handler(CommandHandler("removeall", removeall))
     application.add_handler(CommandHandler("transfer", transfer))
@@ -316,39 +353,143 @@ def register_handlers(application: Application):
     logger.info("✅ All handlers registered")
 
 
+# ==================== OPERATIONS ====================
+def database_probe():
+    """Run a live MongoDB ping for readiness/watchdog checks."""
+    ping_database()
+    return {"ok": True, "backend": "mongodb", "database": MONGO_DB_NAME}
+
+
 # ==================== MAIN ====================
 def validate_config():
     if not BOT_TOKEN or BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE":
         raise RuntimeError("BOT_TOKEN is not configured. Set it in the environment before starting the bot.")
     if OWNER_ID <= 0:
         raise RuntimeError("OWNER_ID must be a positive Telegram user ID.")
-    if not DATABASE_URL.startswith(("postgres://", "postgresql://")):
+    if not MONGO_URI.startswith(("mongodb://", "mongodb+srv://")):
         raise RuntimeError(
-            "DATABASE_URL must be configured with a PostgreSQL connection URL. "
-            "SQLite runtime storage is no longer supported."
+            "MONGO_URI must be configured with a mongodb:// or mongodb+srv:// URL. "
+            "No PostgreSQL, SQLite, or local-file fallback is available."
         )
+    if not MONGO_DB_NAME.strip():
+        raise RuntimeError("MONGO_DB_NAME must be configured and non-empty.")
+    webhook = urlsplit(WEBHOOK_URL)
+    if webhook.scheme != "https" or not webhook.netloc or not webhook.path:
+        raise RuntimeError(
+            "WEBHOOK_URL must be a public HTTPS URL, for example "
+            "https://summon-bot-wngc.onrender.com/telegram/webhook."
+        )
+    if not 1 <= len(WEBHOOK_SECRET) <= 256:
+        raise RuntimeError("WEBHOOK_SECRET must be a 1-256 character Telegram webhook secret.")
+
+
+async def async_main():
+    global _telegram_log_handler
+    validate_config()
+    telegram_log_handler = install_telegram_log_handler(BOT_TOKEN, LOGGER_ID)
+    _telegram_log_handler = telegram_log_handler
+
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+    application_holder: dict[str, Application] = {}
+
+    def enqueue_webhook(payload: dict, headers: dict[str, str]) -> bool:
+        """Validate and enqueue a webhook update from the HTTP worker thread."""
+        supplied_secret = next(
+            (value for key, value in headers.items() if key.lower() == "x-telegram-bot-api-secret-token"),
+            "",
+        )
+        if supplied_secret != WEBHOOK_SECRET or not isinstance(payload, dict):
+            return False
+        application = application_holder.get("application")
+        if application is None:
+            return False
+        try:
+            update = Update.de_json(payload, application.bot)
+            if update is None:
+                return False
+        except Exception:
+            logger.warning("Rejected malformed Telegram webhook update", exc_info=True)
+            return False
+
+        def put_update() -> None:
+            try:
+                application.update_queue.put_nowait(update)
+            except Exception:
+                logger.exception("Could not enqueue Telegram webhook update")
+
+        loop.call_soon_threadsafe(put_update)
+        return True
+
+    webhook_path = urlsplit(WEBHOOK_URL).path
+    health_state = HealthState()
+    health_server = HealthServer(
+        health_state,
+        PORT,
+        webhook_path=webhook_path,
+        webhook_handler=enqueue_webhook,
+    )
+    watchdog = Watchdog(health_state, database_probe)
+    keepalive = KeepAlive(health_state)
+
+    # Start HTTP health/web-app/webhook routes before database boot so Render
+    # sees a liveness response while the bot is still initializing.
+    health_server.start()
+    watchdog.start()
+    keepalive.start()
+    application: Application | None = None
+    application_started = False
+    try:
+        print("🔧 Initializing database...")
+        init_db()
+        health_state.mark_ready({"ok": True, "backend": "mongodb", "database": MONGO_DB_NAME, "runtime": "webhook"})
+        print("✅ Database ready")
+        print("🔧 Building application...")
+        application = Application.builder().token(BOT_TOKEN).build()
+        application_holder["application"] = application
+
+        print("🔧 Registering handlers...")
+        register_handlers(application)
+        await application.initialize()
+        await post_init(application)
+        await application.start()
+        application_started = True
+
+        webhook_kwargs = {
+            "url": WEBHOOK_URL,
+            "secret_token": WEBHOOK_SECRET,
+            "allowed_updates": ["message", "edited_message", "callback_query", "inline_query"],
+            "drop_pending_updates": True,
+        }
+        await application.bot.set_webhook(**webhook_kwargs)
+        logger.info("Telegram webhook active at %s", WEBHOOK_URL)
+        print("🚀 Webhook runtime active with health/watchdog services")
+
+        for signal_name in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(signal_name, stop_event.set)
+            except (NotImplementedError, RuntimeError):
+                pass
+        await stop_event.wait()
+    finally:
+        application_holder.clear()
+        if application is not None:
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=False)
+            except Exception:
+                logger.warning("Could not delete Telegram webhook during shutdown", exc_info=True)
+            try:
+                if application_started:
+                    await application.stop()
+            finally:
+                await application.shutdown()
+        keepalive.stop()
+        watchdog.stop()
+        health_server.stop()
 
 
 def main():
-    validate_config()
-    print("🔧 Initializing database...")
-    init_db()
-    print("✅ Database ready")
-    print("🔧 Building application...")
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
-
-    print("🔧 Registering handlers...")
-    register_handlers(application)
-    print("🚀 Starting polling...")
-    application.run_polling(
-        allowed_updates=["message", "edited_message", "callback_query", "inline_query"],
-        drop_pending_updates=True,
-    )
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
@@ -360,3 +501,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        if _telegram_log_handler:
+            _telegram_log_handler.close()
