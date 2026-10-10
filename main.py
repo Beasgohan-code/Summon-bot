@@ -9,6 +9,7 @@ from storage import ping as ping_database
 
 
 from telegram import Update, BotCommand
+from telegram.error import NetworkError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -180,8 +181,16 @@ async def post_init(application: Application):
 # ==================== ERROR HANDLER ====================
 
 async def error_handler(update: object, context):
-    """Log errors + try to inform user."""
-    logger.error(f"Update {update} caused error: {context.error}", exc_info=context.error)
+    """Log actionable errors without turning transient Telegram disconnects into alerts."""
+    error = context.error
+    if isinstance(error, NetworkError):
+        # Webhook/API connections can be closed by Telegram or a proxy while a
+        # request is in flight. PTB retries the operation where appropriate;
+        # avoid sending a noisy false alarm to LOGGER_ID or a duplicate user
+        # error message for a transient transport failure.
+        logger.warning("Transient Telegram network error for update %s: %s", update, error)
+        return
+    logger.error("Update %s caused error: %s", update, error, exc_info=error)
 
     try:
         if update and isinstance(update, Update) and update.effective_chat:

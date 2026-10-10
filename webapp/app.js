@@ -53,6 +53,22 @@ const state = {
     nextId: 0,
     best: Number(localStorage.getItem('summon-meteor-best') || 0) || 0,
   },
+  orbit: {
+    active: false,
+    verifying: false,
+    round: 0,
+    maxRounds: 3,
+    score: 0,
+    best: Number(localStorage.getItem('summon-orbit-best') || 0) || 0,
+    cursor: 0,
+    targetStart: 0,
+    targetWidth: 0,
+    locked: false,
+    frame: null,
+    roundTimer: null,
+    nextRoundTimer: null,
+    roundStartedAt: 0,
+  },
 };
 const initData = tg?.initData || '';
 const fmt = new Intl.NumberFormat();
@@ -113,6 +129,7 @@ function gameLabel(game) {
   if (game === 'constellation') return 'Constellation hunt';
   if (game === 'rune_memory') return 'Rune recall';
   if (game === 'meteor_dodge') return 'Meteor dodge';
+  if (game === 'orbit_lock') return 'Orbit lock';
   return 'Daily vault';
 }
 function formatDate(value) {
@@ -315,6 +332,18 @@ function renderMeteorAvailability(cooldowns = state.data?.cooldowns || {}) {
     button.innerHTML = state.meteor.score ? 'Play again <span>↗</span>' : 'Start meteor dodge <span>↗</span>';
   }
 }
+function renderOrbitAvailability(cooldowns = state.data?.cooldowns || {}) {
+  const button = $('#orbit-start');
+  const info = cooldowns.orbit_lock || { available: true, remaining_seconds: 0 };
+  if (!button || state.orbit.active || state.orbit.verifying) return;
+  button.disabled = state.guest || !info.available;
+  if (!info.available) {
+    button.innerHTML = `Reward window in ${duration(info.remaining_seconds)} <span>◷</span>`;
+    setText('#orbit-status', `Next verified reward in ${duration(info.remaining_seconds)}`);
+  } else {
+    button.innerHTML = state.orbit.score ? 'Run again <span>↗</span>' : 'Start orbit lock <span>↗</span>';
+  }
+}
 function renderGames(cooldowns = {}) {
   ['daily', 'spin'].forEach((game) => {
     const info = cooldowns[game] || { available: true, remaining_seconds: 0 };
@@ -331,6 +360,7 @@ function renderGames(cooldowns = {}) {
   renderPracticeAvailability(cooldowns);
   renderMemoryAvailability(cooldowns);
   renderMeteorAvailability(cooldowns);
+  renderOrbitAvailability(cooldowns);
 }
 function startCooldownTicker() {
   clearInterval(state.cooldownTimer);
@@ -762,6 +792,147 @@ function startMeteorGame() {
   haptic('light');
 }
 
+function orbitState(status = state.orbit.active ? 'active' : 'idle') {
+  const board = $('#orbit-board');
+  const target = $('#orbit-target');
+  const cursor = $('#orbit-cursor');
+  if (board) board.dataset.state = status;
+  if (target) {
+    target.style.left = `${state.orbit.targetStart}%`;
+    target.style.width = `${state.orbit.targetWidth}%`;
+    target.classList.toggle('is-hit', status === 'locked');
+  }
+  if (cursor) cursor.style.left = `${state.orbit.cursor}%`;
+  setText('#orbit-round', `${Math.min(state.orbit.round, state.orbit.maxRounds)}/${state.orbit.maxRounds}`);
+  setText('#orbit-score', state.orbit.score);
+  setText('#orbit-best', state.orbit.best);
+  setText('#orbit-progress', status === 'active' ? `Round ${state.orbit.round} of ${state.orbit.maxRounds}` : status === 'complete' ? 'signal secured' : '3 rounds');
+  const copy = {
+    active: 'Track the signal · lock inside the violet zone',
+    locked: 'Perfect lock · recalibrating orbit…',
+    missed: `Signal missed · ${state.orbit.score} points`,
+    complete: `Orbit secured · ${state.orbit.score} points`,
+    idle: 'Ready when you are',
+  };
+  setText('#orbit-status', copy[status] || copy.idle);
+  const start = $('#orbit-start');
+  if (start) {
+    start.disabled = state.orbit.verifying;
+    start.innerHTML = state.orbit.verifying ? 'Verifying run…' : status === 'active' || status === 'locked' ? 'Abort run <span>×</span>' : status === 'complete' ? 'Run again <span>↗</span>' : status === 'missed' ? 'Try again <span>↗</span>' : 'Start orbit lock <span>↗</span>';
+  }
+  const lock = $('#orbit-lock');
+  if (lock) lock.disabled = status !== 'active' || state.orbit.verifying;
+  if (!state.orbit.active && !state.orbit.verifying) renderOrbitAvailability();
+}
+function orbitClear() {
+  if (state.orbit.frame) cancelAnimationFrame(state.orbit.frame);
+  clearTimeout(state.orbit.roundTimer);
+  clearTimeout(state.orbit.nextRoundTimer);
+  state.orbit.frame = null;
+  state.orbit.roundTimer = null;
+  state.orbit.nextRoundTimer = null;
+  state.orbit.locked = false;
+}
+function orbitBeginRound() {
+  if (!state.orbit.active) return;
+  clearTimeout(state.orbit.roundTimer);
+  state.orbit.locked = false;
+  const width = Math.max(16, 30 - state.orbit.round * 4);
+  state.orbit.targetWidth = width;
+  state.orbit.targetStart = 8 + Math.random() * (84 - width);
+  state.orbit.cursor = 0;
+  state.orbit.roundStartedAt = performance.now();
+  orbitState('active');
+  state.orbit.roundTimer = setTimeout(() => finishOrbitGame(false, false, true), 4800);
+  state.orbit.frame = requestAnimationFrame(orbitFrame);
+}
+function orbitFrame(now) {
+  if (!state.orbit.active || state.orbit.locked) return;
+  const elapsed = (now - state.orbit.roundStartedAt) % 2600;
+  state.orbit.cursor = elapsed < 1300 ? (elapsed / 13) : ((2600 - elapsed) / 13);
+  const cursor = $('#orbit-cursor');
+  if (cursor) cursor.style.left = `${state.orbit.cursor}%`;
+  state.orbit.frame = requestAnimationFrame(orbitFrame);
+}
+function lockOrbit() {
+  if (!state.orbit.active || state.orbit.locked) return;
+  state.orbit.locked = true;
+  clearTimeout(state.orbit.roundTimer);
+  if (state.orbit.cursor >= state.orbit.targetStart && state.orbit.cursor <= state.orbit.targetStart + state.orbit.targetWidth) {
+    state.orbit.score += 100 + state.orbit.round * 45;
+    haptic('medium');
+    orbitState('locked');
+    if (state.orbit.round < state.orbit.maxRounds) {
+      state.orbit.nextRoundTimer = setTimeout(() => {
+        state.orbit.round += 1;
+        orbitBeginRound();
+      }, 620);
+    } else {
+      state.orbit.nextRoundTimer = setTimeout(() => finishOrbitGame(true), 620);
+    }
+    return;
+  }
+  haptic('heavy');
+  finishOrbitGame(false, false, false);
+}
+function finishOrbitGame(success = false, aborted = false, timeout = false) {
+  if (!state.orbit.active && !state.orbit.verifying) return;
+  orbitClear();
+  state.orbit.active = false;
+  if (state.orbit.score > state.orbit.best) {
+    state.orbit.best = state.orbit.score;
+    localStorage.setItem('summon-orbit-best', String(state.orbit.best));
+  }
+  if (aborted) {
+    state.orbit.round = 0;
+    state.orbit.score = 0;
+    orbitState('idle');
+    return;
+  }
+  if (!success) {
+    orbitState('missed');
+    showToast(timeout ? 'Orbit Lock timed out.' : 'The signal slipped away. Try again.', true);
+    return;
+  }
+  const finalScore = state.orbit.score;
+  state.orbit.verifying = true;
+  orbitState('complete');
+  haptic('heavy');
+  setText('#orbit-status', 'Verifying your orbit run…');
+  api('/api/miniapp/game', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ game: 'orbit_lock', score: finalScore, event_id: eventId() }),
+  }).then(async (result) => {
+    showReward('orbit_lock', result.winnings);
+    await load({ quiet: true });
+  }).catch(async (error) => {
+    showToast(error.message || 'Run complete, but the reward could not be recorded.', true);
+    setText('#orbit-status', 'Run complete · reward verification unavailable');
+    if (error.status === 409) await load({ quiet: true }).catch(() => {});
+  }).finally(() => {
+    state.orbit.verifying = false;
+    orbitState('complete');
+    renderOrbitAvailability();
+  });
+}
+function startOrbitGame() {
+  if (state.guest) { showToast('Open the Mini App in Telegram to enter Orbit Lock.', true); return; }
+  if (state.orbit.verifying) return;
+  if (!state.orbit.active && state.data?.cooldowns?.orbit_lock && !state.data.cooldowns.orbit_lock.available) {
+    showToast(`The next orbit reward is available in ${duration(state.data.cooldowns.orbit_lock.remaining_seconds)}.`, true);
+    return;
+  }
+  if (state.orbit.active) { finishOrbitGame(false, true); return; }
+  orbitClear();
+  state.orbit.active = true;
+  state.orbit.round = 1;
+  state.orbit.score = 0;
+  orbitBeginRound();
+  $('#orbit-board')?.focus({ preventScroll: true });
+  haptic('light');
+}
+
 function transactionItem(item) {
   const row = document.createElement('article');
   row.className = 'transaction-item transaction-clickable';
@@ -771,9 +942,9 @@ function transactionItem(item) {
   row.dataset.eventId = item.id || '';
   row.style.setProperty('--item-delay', `${Math.min(5, Math.random() * 5) * 45}ms`);
   const icon = document.createElement('span');
-  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : item.game === 'meteor_dodge' ? 'meteor' : 'daily';
+  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : item.game === 'meteor_dodge' ? 'meteor' : item.game === 'orbit_lock' ? 'orbit' : 'daily';
   icon.className = `transaction-icon ${iconMode}`;
-  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : item.game === 'meteor_dodge' ? '☄' : '☀';
+  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : item.game === 'meteor_dodge' ? '☄' : item.game === 'orbit_lock' ? '◎' : '☀';
   const copy = document.createElement('span');
   copy.className = 'transaction-copy';
   const title = document.createElement('b');
@@ -900,12 +1071,13 @@ function renderInsights(history = [], cooldowns = {}) {
   const constellation = history.filter((item) => item.game === 'constellation').length;
   const memory = history.filter((item) => item.game === 'rune_memory').length;
   const meteor = history.filter((item) => item.game === 'meteor_dodge').length;
-  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory], ['Meteor dodge', meteor]].sort((a, b) => b[1] - a[1]);
+  const orbit = history.filter((item) => item.game === 'orbit_lock').length;
+  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory], ['Meteor dodge', meteor], ['Orbit lock', orbit]].sort((a, b) => b[1] - a[1]);
   const favourite = history.length && modes[0][1] > 0 ? modes[0][0] : '—';
   setText('#earned-total', coins(todayTotal));
   setText('#average-reward', coins(average));
   setText('#favorite-mode', favourite);
-  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory, meteor)} verified claims` : 'waiting for activity');
+  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory, meteor, orbit)} verified claims` : 'waiting for activity');
   const available = Object.entries(cooldowns).filter(([, value]) => value?.available);
   const next = available.length ? null : Object.entries(cooldowns).sort((a, b) => (a[1]?.remaining_seconds || 0) - (b[1]?.remaining_seconds || 0))[0];
   if (!next) {
@@ -984,8 +1156,9 @@ function openTransactionDetail(item) {
   const constellation = item.game === 'constellation';
   const memory = item.game === 'rune_memory';
   const meteor = item.game === 'meteor_dodge';
+  const orbit = item.game === 'orbit_lock';
   setText('#transaction-detail-title', `${gameLabel(item.game)} receipt`);
-  setText('#transaction-detail-copy', meteor ? 'Your survival run was verified and written to the secure ledger.' : memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
+  setText('#transaction-detail-copy', orbit ? 'Your orbit timing run was verified and written to the secure ledger.' : meteor ? 'Your survival run was verified and written to the secure ledger.' : memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
   setText('#transaction-detail-amount', `+${coins(item.amount)} COINS`);
   setText('#transaction-detail-type', gameLabel(item.game));
   setText('#transaction-detail-time', formatDate(item.created_at));
@@ -993,7 +1166,7 @@ function openTransactionDetail(item) {
   const copyButton = $('#copy-transaction-ref');
   if (copyButton) copyButton.disabled = !item.id;
   const icon = $('#transaction-detail-icon');
-  if (icon) { icon.textContent = meteor ? '☄' : memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); icon.classList.toggle('meteor-receipt', meteor); }
+  if (icon) { icon.textContent = orbit ? '◎' : meteor ? '☄' : memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); icon.classList.toggle('meteor-receipt', meteor); icon.classList.toggle('orbit-receipt', orbit); }
   if (dialog.showModal) dialog.showModal();
 }
 async function copyTransactionReference() {
@@ -1096,6 +1269,8 @@ function renderPublic(data) {
   if (state.memory.verifying) { state.memory.verifying = false; memoryState('idle'); }
   if (state.meteor.active) finishMeteorGame(false, true);
   if (state.meteor.verifying) { state.meteor.verifying = false; meteorState('idle'); }
+  if (state.orbit.active) finishOrbitGame(false, true);
+  if (state.orbit.verifying) { state.orbit.verifying = false; orbitState('idle'); }
   clearInterval(state.cooldownTimer);
   state.cooldownTimer = null;
   state.data = data;
@@ -1169,7 +1344,7 @@ function launchConfetti() {
 }
 function showReward(game, amount) {
   const dialog = $('#reward');
-  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : game === 'meteor_dodge' ? 'Storm cleared!' : 'Daily vault opened');
+  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : game === 'meteor_dodge' ? 'Storm cleared!' : game === 'orbit_lock' ? 'Orbit secured!' : 'Daily vault opened');
   setText('#reward-amount', `+${coins(amount)}`);
   launchConfetti();
   haptic('heavy');
@@ -1245,6 +1420,8 @@ $('#memory-start')?.addEventListener('click', startMemoryGame);
 $$('[data-memory-tile]').forEach((tile) => tile.addEventListener('click', hitMemoryTile));
 $('#meteor-start')?.addEventListener('click', startMeteorGame);
 $$('[data-meteor-move]').forEach((button) => button.addEventListener('click', () => meteorMove(button.dataset.meteorMove === 'left' ? -1 : 1)));
+$('#orbit-start')?.addEventListener('click', startOrbitGame);
+$('#orbit-lock')?.addEventListener('click', lockOrbit);
 let meteorTouchX = null;
 $('#meteor-arena')?.addEventListener('touchstart', (event) => {
   meteorTouchX = event.changedTouches?.[0]?.clientX ?? null;
@@ -1260,6 +1437,13 @@ document.addEventListener('keydown', (event) => {
   if (!state.meteor.active) return;
   if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') { event.preventDefault(); meteorMove(-1); }
   if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') { event.preventDefault(); meteorMove(1); }
+});
+document.addEventListener('keydown', (event) => {
+  if (!state.orbit.active || (event.key !== ' ' && event.key !== 'Enter')) return;
+  const target = event.target;
+  if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+  event.preventDefault();
+  lockOrbit();
 });
 function refreshLedgerView() {
   renderTransactions('#recent', state.data?.history || [], 4);
@@ -1362,6 +1546,7 @@ setupRevealObserver();
 practiceState('idle');
 memoryState('idle');
 meteorState('idle');
+orbitState('idle');
 navigate(initData && ['home', 'arcade', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
 loadMotionLibraries().catch(() => {});
 load().catch(() => {});
