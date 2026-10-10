@@ -74,6 +74,10 @@ finally:
 
 app_source = (ROOT / "webapp" / "app.js").read_text(encoding="utf-8")
 assert "/api/miniapp/public" in app_source
+assert "animateNumber" in app_source
+assert "launchConfetti" in app_source
+assert "transactionFilter" in app_source
+assert "balance-sparkline" in (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
 assert "Sign in through Telegram" in (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
 assert "grant_premium" in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
 assert "INSERT INTO premium" not in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")

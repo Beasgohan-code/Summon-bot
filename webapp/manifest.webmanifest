@@ -1,12 +1,12 @@
 {
   "name": "Summon Command Center",
   "short_name": "Summon",
-  "description": "Secure Summon Telegram Mini App dashboard",
+  "description": "Animated, server-verified Summon command center",
   "start_url": "/app/",
   "scope": "/app/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#080d18",
-  "theme_color": "#080d18",
+  "background_color": "#070b16",
+  "theme_color": "#070b16",
   "categories": ["games", "entertainment"]
 }

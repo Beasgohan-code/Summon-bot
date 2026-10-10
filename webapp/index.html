@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#09111f">
+  <meta name="theme-color" content="#070b16">
   <meta name="description" content="Summon secure Telegram Mini App dashboard">
   <link rel="manifest" href="/app/manifest.webmanifest">
   <link rel="stylesheet" href="/app/styles.css">
@@ -11,53 +11,106 @@
   <title>Summon Command Center</title>
 </head>
 <body>
-  <div class="orb orb-a" aria-hidden="true"></div><div class="orb orb-b" aria-hidden="true"></div>
-  <main class="shell">
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <div class="ambient ambient-three" aria-hidden="true"></div>
+  <div class="grid-noise" aria-hidden="true"></div>
+
+  <main class="app-shell">
     <header class="topbar">
-      <div class="brand"><div class="brand-icon">✦</div><div><span class="kicker">SUMMON WORLD</span><h1>Command Center</h1></div></div>
-      <div class="actions"><span id="connection" class="connection"><i></i> Connecting</span><button id="theme" class="round" type="button" aria-label="Toggle theme">☾</button><button id="avatar" class="avatar" type="button" aria-label="Open progress">S</button></div>
+      <a class="brand" href="#home" aria-label="Summon home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img"><path d="M24 3 29 18l16 6-16 6-5 15-5-15-16-6 16-6 5-15Z"/><path class="brand-core" d="m24 13 2.4 8.6L35 24l-8.6 2.4L24 35l-2.4-8.6L13 24l8.6-2.4L24 13Z"/></svg>
+        </span>
+        <span class="brand-copy"><span class="kicker">SUMMON WORLD</span><strong>Command Center</strong></span>
+      </a>
+      <div class="top-actions">
+        <span id="connection" class="connection"><i></i><span id="connection-label">Connecting</span></span>
+        <button id="theme" class="icon-button" type="button" aria-label="Toggle theme"><span id="theme-icon">☾</span></button>
+        <button id="avatar" class="avatar" type="button" aria-label="Open progress">S</button>
+      </div>
     </header>
 
-    <div id="alert" class="alert" role="alert" hidden><b>!</b><span id="alert-text"></span><button id="retry" class="link-button" type="button">Retry</button></div>
-    <div id="guest-banner" class="guest-banner" role="status" hidden><b>◈ Public preview</b><span>Read-only catalogue and leaderboard data. Open this Mini App from Telegram to access your account.</span></div>
+    <div id="alert" class="alert" role="alert" hidden>
+      <span class="alert-icon">!</span><span id="alert-text"></span><button id="retry" class="text-button" type="button">Retry</button>
+    </div>
+    <div id="guest-banner" class="guest-banner" role="status" hidden>
+      <span class="guest-lock">◈</span><span><b>Public preview</b><small>Read-only catalogue and leaderboard data. Open this Mini App from Telegram to unlock your command center.</small></span>
+    </div>
 
     <section id="home" class="screen active" data-screen="home">
-      <div class="welcome"><div><span class="kicker">YOUR ANIME UNIVERSE</span><h2>Welcome, <span id="name">Summoner</span> <em>✦</em></h2><p id="welcome-copy">Your collection is waiting for its next legendary pull.</p></div><div id="hero-avatar" class="hero-avatar">S</div></div>
-      <section id="guest-overview" class="panel guest-overview" hidden><div class="heading"><div><span class="kicker">PUBLIC CATALOGUE</span><h3>Explore Summon World</h3></div><span class="secure">✓ read-only</span></div><div class="guest-total"><strong id="guest-catalogue">—</strong><span>characters in the catalogue</span></div><div id="guest-rarities" class="guest-rarities"><span class="loading">Loading catalogue metadata…</span></div><p>Sign in through Telegram for your private balance, collection, and reward controls.</p></section>
-      <section class="balance-card" data-private="true">
-        <div class="balance-top"><div><span class="kicker cyan">AUTHENTICATED BALANCE</span><div class="balance"><strong id="balance">—</strong><small>COINS</small></div></div><div class="coin-orbit">◈</div></div>
-        <div class="balance-bottom"><span>Rank <b id="rank">—</b></span><span>Streak <b id="streak">0 days</b></span><button id="refresh" class="round refresh" type="button" aria-label="Refresh dashboard">↻</button></div>
+      <section class="hero reveal">
+        <div class="hero-copy">
+          <div class="eyebrow"><span class="live-dot"></span><span>YOUR ANIME UNIVERSE</span><span class="eyebrow-line"></span><span class="eyebrow-muted">LIVE LEDGER</span></div>
+          <h1>Welcome back,<br><span id="name">Summoner</span><b class="hero-star">✦</b></h1>
+          <p id="welcome-copy">Your collection is waiting for its next legendary pull.</p>
+          <div class="hero-actions">
+            <button class="primary-button" data-go="arcade" data-private="true" type="button">Enter arcade <span>↗</span></button>
+            <button id="hero-refresh" class="ghost-button" type="button"><span>↻</span> Sync dashboard</button>
+          </div>
+          <div class="trust-line"><span>✦</span><span>Server verified</span><i></i><span>Telegram secured</span><i></i><span id="last-sync">Waiting for sync</span></div>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="orbit orbit-back"></div><div class="orbit orbit-front"></div><div class="orbit orbit-flat"></div>
+          <div class="hero-planet"><span class="planet-glow"></span><span id="hero-avatar" class="hero-avatar">S</span><span class="planet-shine"></span></div>
+          <span class="star star-one">✦</span><span class="star star-two">·</span><span class="star star-three">✧</span><span class="star star-four">+</span>
+          <div class="hero-coordinate">07<span>/</span>24 <small>SYNC CYCLE</small></div>
+        </div>
       </section>
-      <div class="metrics" data-private="true"><article><b>◈</b><strong id="collection">—</strong><small>collection</small><i id="collection-bar"></i></article><article><b>✧</b><strong id="copies">—</strong><small>total copies</small><span id="percent">0% complete</span></article><article><b>♨</b><strong id="best">0</strong><small>best streak</small><span>keep the fire alive</span></article></div>
 
-      <div data-private="true"><div class="heading"><div><span class="kicker">SERVER-VERIFIED</span><h3>Play &amp; earn</h3></div><span class="live">● LIVE</span></div>
-      <div class="games">
-        <article class="game daily" data-card="daily"><div class="game-icon">☀</div><span class="tag">DAILY DROP</span><h4>Open the vault</h4><p>Claim a guaranteed pocket of coins every 24 hours.</p><div class="game-foot"><small data-status="daily">Checking…</small><button data-game="daily" type="button">Claim →</button></div></article>
-        <article class="game spin" data-card="spin"><div class="game-icon">✹</div><span class="tag">LUCKY REEL</span><h4>Spin the cosmos</h4><p>Test your luck for a wider server-side reward.</p><div class="game-foot"><small data-status="spin">Checking…</small><button data-game="spin" type="button">Spin →</button></div></article>
-      </div></div>
+      <section id="guest-overview" class="panel guest-overview reveal" hidden>
+        <div class="panel-heading"><div><span class="kicker">PUBLIC CATALOGUE</span><h2>Explore Summon World</h2></div><span class="status-pill cyan-pill">✓ read-only</span></div>
+        <div class="guest-overview-grid"><div class="guest-total"><strong id="guest-catalogue">—</strong><span>characters<br>in catalogue</span></div><div id="guest-rarities" class="guest-rarities"><span class="loading">Loading catalogue metadata…</span></div></div>
+        <p class="guest-note">Sign in through Telegram for your private balance, collection, reward history, and game controls.</p>
+      </section>
 
-      <section class="panel" data-private="true"><div class="heading"><div><span class="kicker">AUDIT TRAIL</span><h3>Recent activity</h3></div><button class="link-button" data-go="progress" type="button">View all</button></div><div id="recent" class="activity"><div class="loading">Loading verified activity…</div></div></section>
+      <section class="balance-card reveal" data-private="true">
+        <div class="card-shine"></div>
+        <div class="balance-head"><div><span class="kicker cyan">AUTHENTICATED BALANCE</span><span class="balance-caption">Your spendable energy</span></div><span class="ledger-chip"><i></i> LIVE LEDGER</span></div>
+        <div class="balance-main"><div class="balance-value"><strong id="balance">—</strong><small>COINS</small><span id="balance-change" class="balance-change">● synced</span></div><div class="balance-visual"><svg id="balance-sparkline" viewBox="0 0 220 72" preserveAspectRatio="none" aria-label="Reward activity chart"></svg><span class="chart-label chart-label-left">RECENT REWARDS</span><span class="chart-label chart-label-right">24H</span></div><div class="coin-orbit"><span>◈</span><i></i></div></div>
+        <div class="balance-foot"><div><span>World rank</span><b id="rank">—</b></div><div><span>Current streak</span><b id="streak">0 days</b></div><div><span>Ledger status</span><b class="positive"><i></i> Verified</b></div><button id="refresh" class="refresh-button" type="button" aria-label="Refresh dashboard">↻</button></div>
+      </section>
+
+      <div class="stat-grid" data-private="true">
+        <article class="stat-card reveal" style="--delay:80ms"><span class="stat-icon violet">◈</span><div><strong id="collection">—</strong><span>collection</span></div><small id="collection-percent">0% complete</small><i id="collection-bar"></i></article>
+        <article class="stat-card reveal" style="--delay:140ms"><span class="stat-icon gold">✧</span><div><strong id="copies">—</strong><span>total copies</span></div><small>across your vault</small></article>
+        <article class="stat-card reveal" style="--delay:200ms"><span class="stat-icon pink">♨</span><div><strong id="best">0</strong><span>best streak</span></div><small>keep the fire alive</small></article>
+        <article class="stat-card reveal" style="--delay:260ms"><span class="stat-icon cyan-icon">⚡</span><div><strong id="reward-count">0</strong><span>verified claims</span></div><small>safe &amp; server-side</small></article>
+      </div>
+
+      <div class="section-heading reveal"><div><span class="kicker">SERVER-VERIFIED</span><h2>Play &amp; earn</h2><p>One tap. One secure ledger. Zero guesswork.</p></div><span class="status-pill live-pill"><i></i> LIVE ARCADE</span></div>
+      <div class="game-grid" data-private="true">
+        <article class="game-card daily reveal" style="--delay:80ms" data-card="daily"><div class="game-card-top"><span class="game-symbol">☀</span><span class="game-tag">DAILY DROP</span><span class="game-arrow">↗</span></div><h3>Open the vault</h3><p>Claim a guaranteed pocket of coins every 24 hours.</p><div class="game-meta"><span data-status="daily">Checking…</span><b>100–300 <small>🪙</small></b></div><button data-game="daily" type="button">Claim daily <span>→</span></button></article>
+        <article class="game-card cosmic reveal" style="--delay:140ms" data-card="spin"><div class="game-card-top"><span class="game-symbol">✹</span><span class="game-tag">LUCKY REEL</span><span class="game-arrow">↗</span></div><h3>Spin the cosmos</h3><p>Test your luck for a wider server-side reward.</p><div class="game-meta"><span data-status="spin">Checking…</span><b>100–1,000 <small>🪙</small></b></div><button data-game="spin" type="button">Spin the reel <span>→</span></button></article>
+      </div>
+
+      <div class="dashboard-grid">
+        <section class="panel activity-panel reveal" data-private="true"><div class="panel-heading"><div><span class="kicker">AUDIT TRAIL</span><h2>Recent transactions</h2></div><button class="text-button" data-go="progress" type="button">View all <span>↗</span></button></div><div id="recent" class="activity-list"><div class="loading">Loading verified activity…</div></div></section>
+        <aside class="panel streak-panel reveal" data-private="true"><div class="panel-heading"><div><span class="kicker">MOMENTUM</span><h2>Keep the chain alive</h2></div><span class="flame">♨</span></div><div class="streak-meter"><div class="streak-ring"><span id="streak-ring-value">0</span><small>DAYS</small></div><div><b id="streak-message">Start your streak</b><p id="streak-detail">Claim your daily reward to build momentum.</p></div></div><div class="milestone"><span>Next milestone</span><b id="next-milestone">3 day streak</b><i><em id="milestone-bar"></em></i></div></aside>
+      </div>
     </section>
 
     <section id="arcade" class="screen" data-screen="arcade" data-private="true" hidden>
-      <div class="page-title"><span class="kicker">SERVER-SIDE ARCADE</span><h2>Choose your reward</h2><p>Results are verified by Telegram and added to the same bot balance.</p></div>
-      <section class="panel arcade-card"><div class="game-icon">☀</div><div><span class="tag">DAILY DROP</span><h3>Daily vault</h3><p>One claim every 24 hours.</p></div><b>100–300 🪙</b><button data-game="daily" type="button">Claim daily →</button><small data-status="daily">Checking…</small></section>
-      <section class="panel arcade-card"><div class="game-icon pink">✹</div><div><span class="tag">LUCKY REEL</span><h3>Cosmic spin</h3><p>A wider reward range, once a day.</p></div><b>100–1,000 🪙</b><button data-game="spin" type="button">Spin now →</button><small data-status="spin">Checking…</small></section>
-      <section class="panel"><div class="heading"><div><span class="kicker">REWARD HISTORY</span><h3>Verified events</h3></div></div><div id="history" class="activity"><div class="loading">No rewards yet.</div></div></section>
+      <div class="page-title reveal"><div><span class="kicker">SERVER-SIDE ARCADE</span><h1>Choose your reward</h1><p>Every result is verified by Telegram and credited to the same bot balance.</p></div><span class="page-orb">✹</span></div>
+      <section class="arcade-banner panel reveal"><div class="banner-icon">⚡</div><div><span class="kicker cyan">DAILY PROTOCOL</span><h2>Two chances. One secure ledger.</h2><p>Rewards refresh automatically every 24 hours.</p></div><div class="banner-status"><span class="live-dot"></span><b>ONLINE</b><small>server ready</small></div></section>
+      <div class="arcade-grid"><article class="arcade-game panel daily reveal"><div class="arcade-game-icon">☀</div><div class="arcade-game-copy"><span class="game-tag">DAILY DROP</span><h2>Daily vault</h2><p>Open a verified cache of coins once every 24 hours.</p><span data-status="daily" class="game-status">Checking…</span></div><div class="arcade-reward"><small>REWARD RANGE</small><b>100–300</b><span>🪙 coins</span></div><button data-game="daily" type="button">Claim daily <span>→</span></button></article>
+        <article class="arcade-game panel cosmic reveal"><div class="arcade-game-icon">✹</div><div class="arcade-game-copy"><span class="game-tag">LUCKY REEL</span><h2>Cosmic spin</h2><p>Spin the cosmic reel for a wider reward range.</p><span data-status="spin" class="game-status">Checking…</span></div><div class="arcade-reward"><small>REWARD RANGE</small><b>100–1,000</b><span>🪙 coins</span></div><button data-game="spin" type="button">Spin now <span>→</span></button></article></div>
+      <section class="panel history-panel reveal"><div class="panel-heading"><div><span class="kicker">IMMUTABLE LEDGER</span><h2>Transaction history</h2><p>Only server-confirmed rewards appear here.</p></div><span class="secure-badge">✓ VERIFIED</span></div><div class="filter-row"><button class="filter-button active" data-transaction-filter="all" type="button">All activity</button><button class="filter-button" data-transaction-filter="daily" type="button">Daily vault</button><button class="filter-button" data-transaction-filter="spin" type="button">Cosmic spin</button></div><div id="history" class="activity-list transaction-list"><div class="loading">No rewards yet.</div></div></section>
     </section>
 
     <section id="progress" class="screen" data-screen="progress" hidden>
-      <div id="private-progress-title" class="page-title"><span class="kicker">PROFILE INTELLIGENCE</span><h2>Your progress</h2><p>A live snapshot of your collection and place in the world.</p></div>
-      <div id="guest-progress-title" class="page-title" hidden><span class="kicker">PUBLIC EXPLORER</span><h2>Summon World</h2><p>Browse public rankings without exposing any private account data.</p></div>
-      <section class="panel progress-card" data-private="true"><div><span class="kicker">COLLECTION COMPLETION</span><h3><span id="progress-percent">0</span>% collected</h3></div><div class="ring"><span id="ring-value">0%</span></div><div class="wide-bar"><i id="wide-bar"></i></div><small><span id="owned">0 owned</span><span id="catalogue">0 in catalogue</span></small></section>
-      <section class="panel"><div class="heading"><div><span class="kicker">LIVE RANKING</span><h3>Coin leaders</h3></div><span id="leaderboard-badge" class="secure">✓ secure</span></div><div id="leaders" class="leaders"><div class="loading">Loading leaderboard…</div></div></section>
-      <section class="panel account" data-private="true"><div class="heading"><div><span class="kicker">TELEGRAM IDENTITY</span><h3>Secure account</h3></div><span class="secure">✓ verified</span></div><div class="account-row"><div id="account-avatar" class="avatar large">S</div><div><strong id="account-name">Summoner</strong><small id="account-handle">Telegram WebApp session</small></div></div><p>Rewards are tied to your authenticated Telegram account and use the same balance as the bot.</p></section>
+      <div id="private-progress-title" class="page-title reveal"><div><span class="kicker">PROFILE INTELLIGENCE</span><h1>Your progress</h1><p>A live snapshot of your collection and place in the world.</p></div><span class="page-orb">◈</span></div>
+      <div id="guest-progress-title" class="page-title reveal" hidden><div><span class="kicker">PUBLIC EXPLORER</span><h1>Summon World</h1><p>Browse public rankings without exposing any private account data.</p></div><span class="page-orb">✦</span></div>
+      <section class="panel progress-card reveal" data-private="true"><div class="progress-copy"><span class="kicker">COLLECTION COMPLETION</span><h2><span id="progress-percent">0</span><small>%</small> collected</h2><p>Your next legendary pull is closer than you think.</p></div><div class="ring"><span id="ring-value">0%</span></div><div class="wide-bar"><i id="wide-bar"></i></div><small class="progress-labels"><span id="owned">0 owned</span><span id="catalogue">0 in catalogue</span></small></section>
+      <section class="panel leaderboard-panel reveal"><div class="panel-heading"><div><span class="kicker">LIVE RANKING</span><h2>Coin leaders</h2><p>See who is powering the world.</p></div><span id="leaderboard-badge" class="secure-badge">✓ SECURE</span></div><div id="leaders" class="leaders"><div class="loading">Loading leaderboard…</div></div></section>
+      <section class="panel account-panel reveal" data-private="true"><div class="panel-heading"><div><span class="kicker">TELEGRAM IDENTITY</span><h2>Secure account</h2></div><span class="secure-badge">✓ VERIFIED</span></div><div class="account-row"><div id="account-avatar" class="avatar large">S</div><div><strong id="account-name">Summoner</strong><small id="account-handle">Telegram WebApp session</small></div><span class="account-shield">⌁</span></div><p>Rewards are tied to your authenticated Telegram account and use the same balance as the bot.</p></section>
     </section>
 
-    <nav class="nav" aria-label="Mini App navigation"><button class="selected" data-go="home" type="button"><span>⌂</span><small>Home</small></button><button data-go="arcade" data-private="true" type="button"><span>✹</span><small>Arcade</small></button><button data-go="progress" type="button"><span>◈</span><small>Progress</small></button></nav>
+    <nav class="bottom-nav" aria-label="Mini App navigation"><button class="selected" data-go="home" type="button"><span>⌂</span><small>Home</small></button><button data-go="arcade" data-private="true" type="button"><span>✹</span><small>Arcade</small></button><button data-go="progress" type="button"><span>◈</span><small>Progress</small></button></nav>
   </main>
+
   <div id="toast" class="toast" role="status"></div>
-  <dialog id="reward"><div class="sparkle">✦</div><span class="kicker">SERVER CONFIRMED</span><h2 id="reward-title">Reward unlocked</h2><p>Your result was verified and added to your bot balance.</p><strong id="reward-amount">+0</strong><small>COINS</small><button id="close-reward" type="button">Continue</button></dialog>
+  <dialog id="reward"><div id="confetti" class="confetti" aria-hidden="true"></div><div class="reward-icon">✦</div><span class="kicker">SERVER CONFIRMED</span><h2 id="reward-title">Reward unlocked</h2><p>Your result was verified and added to your bot balance.</p><strong id="reward-amount">+0</strong><small>COINS</small><button id="close-reward" class="primary-button" type="button">Continue <span>→</span></button></dialog>
   <script type="module" src="/app/app.js"></script>
 </body>
 </html>
