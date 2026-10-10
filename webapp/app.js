@@ -8,6 +8,8 @@ const state = {
   toast: null,
   guest: false,
   transactionFilter: 'all',
+  transactionSearch: '',
+  tickerTimer: null,
 };
 const initData = tg?.initData || '';
 const fmt = new Intl.NumberFormat();
@@ -39,10 +41,18 @@ function setProgress(selector, percent) {
   if (node) node.style.transform = `scaleX(${Math.max(0, Math.min(100, Number(percent) || 0)) / 100})`;
 }
 function eventId() { return window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
-function relative(value) {
-  if (!value) return 'Recently';
+function parseTimestamp(value) {
+  if (!value) return null;
   const parsed = new Date(String(value).replace(' ', 'T') + (String(value).includes('Z') ? '' : 'Z'));
-  if (Number.isNaN(parsed.getTime())) return 'Recently';
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+function dateKey(value) {
+  const parsed = value instanceof Date ? value : parseTimestamp(value);
+  return parsed ? parsed.toLocaleDateString() : '';
+}
+function relative(value) {
+  const parsed = parseTimestamp(value);
+  if (!parsed) return 'Recently';
   const seconds = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 1000));
   if (seconds < 60) return 'Just now';
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
@@ -142,7 +152,10 @@ function renderGames(cooldowns = {}) {
 
 function transactionItem(item) {
   const row = document.createElement('article');
-  row.className = 'transaction-item';
+  row.className = 'transaction-item transaction-clickable';
+  row.tabIndex = 0;
+  row.setAttribute('role', 'button');
+  row.setAttribute('aria-label', 'Open transaction receipt');
   row.style.setProperty('--item-delay', `${Math.min(5, Math.random() * 5) * 45}ms`);
   const icon = document.createElement('span');
   icon.className = `transaction-icon ${item.game === 'spin' ? 'spin' : 'daily'}`;
@@ -164,12 +177,20 @@ function transactionItem(item) {
   amountWrap.className = 'transaction-value';
   amountWrap.append(amount, coin);
   row.append(icon, copy, amountWrap);
+  const open = () => openTransactionDetail(item);
+  row.addEventListener('click', open);
+  row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } });
   return row;
 }
 function renderTransactions(selector, items = [], limit = Infinity) {
   const node = $(selector);
   if (!node) return;
-  const visible = state.transactionFilter === 'all' ? items : items.filter((item) => item.game === state.transactionFilter);
+  const query = state.transactionSearch.trim().toLowerCase();
+  const visible = items.filter((item) => {
+    const modeMatch = state.transactionFilter === 'all' || item.game === state.transactionFilter;
+    const text = `${item.game || ''} ${item.amount || ''} ${item.created_at || ''}`.toLowerCase();
+    return modeMatch && (!query || text.includes(query));
+  });
   node.replaceChildren();
   if (!visible.length) {
     const empty = document.createElement('div');
@@ -235,7 +256,10 @@ function renderLeaders(entries = []) {
     const primary = document.createElement('b'); primary.textContent = entry.name;
     const secondary = document.createElement('small'); secondary.textContent = entry.is_you ? 'That’s you' : (entry.username ? `@${entry.username}` : 'Summoner');
     name.append(primary, secondary);
-    const balance = document.createElement('span'); balance.className = 'leader-coins'; balance.textContent = `${shortFmt.format(entry.balance || 0)} <small>🪙</small>`;
+    const balance = document.createElement('span'); balance.className = 'leader-coins';
+    const balanceValue = document.createElement('b'); balanceValue.textContent = shortFmt.format(entry.balance || 0);
+    const balanceUnit = document.createElement('small'); balanceUnit.textContent = ' 🪙';
+    balance.append(balanceValue, balanceUnit);
     row.append(rank, avatar, name, balance);
     node.append(row);
   });
@@ -250,6 +274,74 @@ function renderStreak(streak = {}) {
   setText('#next-milestone', `${next} day streak`);
   const percent = Math.min(100, (current / Math.max(1, next)) * 100);
   const bar = $('#milestone-bar'); if (bar) bar.style.width = `${percent}%`;
+}
+function renderInsights(history = [], cooldowns = {}) {
+  const total = history.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const today = dateKey(new Date());
+  const todayTotal = history.filter((item) => dateKey(item.created_at) === today)
+    .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const average = history.length ? Math.round(total / history.length) : 0;
+  const daily = history.filter((item) => item.game === 'daily').length;
+  const spin = history.filter((item) => item.game === 'spin').length;
+  const favourite = daily === spin ? (history.length ? 'Balanced' : '—') : (daily > spin ? 'Daily vault' : 'Cosmic spin');
+  setText('#earned-total', coins(todayTotal));
+  setText('#average-reward', coins(average));
+  setText('#favorite-mode', favourite);
+  setText('#favorite-detail', history.length ? `${Math.max(daily, spin)} verified claims` : 'waiting for activity');
+  const available = Object.entries(cooldowns).filter(([, value]) => value?.available);
+  const next = available.length ? null : Object.entries(cooldowns).sort((a, b) => (a[1]?.remaining_seconds || 0) - (b[1]?.remaining_seconds || 0))[0];
+  if (!next) {
+    setText('#next-window', 'Ready');
+    setText('#next-window-detail', 'Your next reward is available.');
+  } else {
+    setText('#next-window', duration(next[1]?.remaining_seconds));
+    setText('#next-window-detail', next[0] === 'spin' ? 'Cosmic spin unlocks next.' : 'Daily vault unlocks next.');
+  }
+}
+function updateLiveTicker(history = []) {
+  const node = $('#live-ticker');
+  if (!node) return;
+  clearInterval(state.tickerTimer);
+  const messages = history.length
+    ? history.slice(0, 4).map((item) => `${item.game === 'spin' ? 'Cosmic spin' : 'Daily vault'} · +${coins(item.amount)} coins · ${relative(item.created_at)}`)
+    : ['Waiting for your next verified event…', 'Your ledger is protected by server checks.'];
+  let index = 0;
+  const paint = () => {
+    node.classList.remove('ticker-swap');
+    void node.offsetWidth;
+    node.innerHTML = `<span class="ticker-dot"></span><span>${messages[index]}</span>`;
+    node.classList.add('ticker-swap');
+    index = (index + 1) % messages.length;
+  };
+  paint();
+  state.tickerTimer = setInterval(paint, 4800);
+}
+function openTransactionDetail(item) {
+  const dialog = $('#transaction-detail');
+  if (!dialog) return;
+  const spin = item.game === 'spin';
+  const when = parseTimestamp(item.created_at);
+  setText('#transaction-detail-title', spin ? 'Cosmic spin receipt' : 'Daily vault receipt');
+  setText('#transaction-detail-copy', spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
+  setText('#transaction-detail-amount', `+${coins(item.amount)} COINS`);
+  setText('#transaction-detail-type', spin ? 'Cosmic spin' : 'Daily vault');
+  setText('#transaction-detail-time', when && !Number.isNaN(when.getTime()) ? when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'Recently');
+  setText('#transaction-detail-id', item.id ? String(item.id).slice(0, 18) : 'Server event');
+  const icon = $('#transaction-detail-icon');
+  if (icon) { icon.textContent = spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); }
+  if (dialog.showModal) dialog.showModal();
+}
+function downloadHistory() {
+  const history = state.data?.history || [];
+  if (!history.length) { showToast('There are no transactions to export.', true); return; }
+  const rows = [['event_id', 'game', 'amount', 'created_at'], ...history.map((item) => [item.id || '', item.game || '', item.amount || 0, item.created_at || ''])];
+  const csv = rows.map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n');
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  link.download = `summon-ledger-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showToast('Ledger export prepared');
 }
 function render(data) {
   setGuestMode(false);
@@ -288,6 +380,8 @@ function render(data) {
   renderTransactions('#history', history);
   renderSparkline(history);
   renderStreak(streak);
+  renderInsights(history, data.cooldowns || {});
+  updateLiveTicker(history);
 }
 function renderPublic(data) {
   setGuestMode(true);
@@ -302,6 +396,7 @@ function renderPublic(data) {
   setText('#last-sync', 'Public data synced');
   renderRarities(catalogue.rarities || []);
   renderLeaders(data.leaderboard || []);
+  updateLiveTicker([]);
   navigate('home');
 }
 
@@ -422,6 +517,14 @@ $$('[data-transaction-filter]').forEach((button) => button.addEventListener('cli
   $$('[data-transaction-filter]').forEach((item) => item.classList.toggle('active', item === button));
   renderTransactions('#history', state.data?.history || []);
 }));
+$('#transaction-search')?.addEventListener('input', (event) => {
+  state.transactionSearch = event.target.value || '';
+  renderTransactions('#history', state.data?.history || []);
+});
+$('#export-history')?.addEventListener('click', downloadHistory);
+$('#close-transaction')?.addEventListener('click', () => $('#transaction-detail')?.close());
+$('#close-transaction-action')?.addEventListener('click', () => $('#transaction-detail')?.close());
+$('#transaction-detail')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
 async function refreshDashboard() {
   const buttons = [$('#refresh'), $('#hero-refresh')].filter(Boolean);
   buttons.forEach((button) => button.classList.add('is-loading'));
@@ -435,6 +538,47 @@ $('#avatar')?.addEventListener('click', () => navigate('progress'));
 $('#close-reward')?.addEventListener('click', () => $('#reward')?.close());
 $('#reward')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
 window.addEventListener('hashchange', () => navigate(location.hash.slice(1) || 'home'));
+function setPalette(open) {
+  const palette = $('#command-palette');
+  if (!palette) return;
+  palette.hidden = !open;
+  if (open) { $('#palette-input')?.focus(); }
+}
+async function runPaletteAction(action) {
+  if (action === 'theme') toggleTheme();
+  else if (action === 'sync') await refreshDashboard();
+  else navigate(action);
+}
+$$('[data-close-palette]').forEach((node) => node.addEventListener('click', () => setPalette(false)));
+$$('[data-palette-action]').forEach((button) => button.addEventListener('click', async () => {
+  await runPaletteAction(button.dataset.paletteAction);
+  setPalette(false);
+}));
+$('#palette-input')?.addEventListener('input', (event) => {
+  const query = String(event.target.value || '').toLowerCase();
+  $$('.palette-items button').forEach((button) => { button.hidden = query && !button.textContent.toLowerCase().includes(query); });
+});
+window.addEventListener('keydown', (event) => {
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && key === 'k') { event.preventDefault(); setPalette(true); return; }
+  if (event.key === 'Escape') { setPalette(false); $('#transaction-detail')?.close(); $('#reward')?.close(); return; }
+  const target = event.target;
+  const typing = target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+  const shortcut = { h: 'home', a: 'arcade', p: 'progress', r: 'sync', t: 'theme' }[key];
+  if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey && shortcut) {
+    event.preventDefault();
+    runPaletteAction(shortcut);
+  }
+});
+$$('.game-card, .arcade-game, .stat-card').forEach((card) => card.addEventListener('pointermove', (event) => {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || window.innerWidth < 700) return;
+  const rect = card.getBoundingClientRect();
+  const x = ((event.clientX - rect.left) / rect.width - .5) * 5;
+  const y = ((event.clientY - rect.top) / rect.height - .5) * -5;
+  card.style.setProperty('--tilt-x', `${y}deg`);
+  card.style.setProperty('--tilt-y', `${x}deg`);
+}));
+$$('.game-card, .arcade-game, .stat-card').forEach((card) => card.addEventListener('pointerleave', () => { card.style.removeProperty('--tilt-x'); card.style.removeProperty('--tilt-y'); }));
 
 const savedTheme = localStorage.getItem('summon-theme');
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
