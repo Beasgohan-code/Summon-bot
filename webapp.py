@@ -92,7 +92,7 @@ def _dashboard(user_id: int) -> dict:
     connection = connect()
     try:
         user = connection.execute(
-            "SELECT user_id, username, first_name, balance, last_daily, last_spin, last_constellation, last_rune_memory FROM users WHERE user_id = ?",
+            "SELECT user_id, username, first_name, balance, last_daily, last_spin, last_constellation, last_rune_memory, last_meteor_dodge FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         collection = connection.execute(
@@ -142,6 +142,7 @@ def _dashboard(user_id: int) -> dict:
                 "spin": _cooldown(user[5] if user else None),
                 "constellation": _cooldown(user[6] if user else None),
                 "rune_memory": _cooldown(user[7] if user else None),
+                "meteor_dodge": _cooldown(user[8] if user else None),
             },
             "history": [
                 {"id": str(row[0]), "game": row[1], "amount": int(row[2]), "created_at": str(row[3])}
@@ -202,9 +203,9 @@ def _game(headers: dict[str, str], body: bytes):
             return _json(400, {"ok": False, "error": "Invalid score"})
     except (TypeError, ValueError, json.JSONDecodeError):
         return _json(400, {"ok": False, "error": "Invalid JSON"})
-    if game not in {"daily", "spin", "constellation", "rune_memory"} or not event_id or len(event_id) > 128:
+    if game not in {"daily", "spin", "constellation", "rune_memory", "meteor_dodge"} or not event_id or len(event_id) > 128:
         return _json(400, {"ok": False, "error": "Invalid game request"})
-    if game in {"constellation", "rune_memory"} and not 0 <= score <= 100_000:
+    if game in {"constellation", "rune_memory", "meteor_dodge"} and not 0 <= score <= 100_000:
         return _json(400, {"ok": False, "error": "Invalid game score"})
 
     if game == "daily":
@@ -216,10 +217,16 @@ def _game(headers: dict[str, str], body: bytes):
         # payout. The server chooses the reward and the atomic cooldown check
         # remains the only path to a coin credit.
         amount = secrets.randbelow(351) + 150
-    else:
+    elif game == "rune_memory":
         # Rune Recall is also server-paid. The client only submits the result
         # of its local puzzle; it cannot choose the reward amount.
         amount = secrets.randbelow(451) + 200
+    elif game == "meteor_dodge":
+        # Meteor Dodge pays only after a successful client-side run, while the
+        # server still chooses the amount and enforces the cooldown atomically.
+        amount = secrets.randbelow(371) + 180
+    else:
+        return _json(400, {"ok": False, "error": "Unsupported game"})
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     cooldown_cutoff = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")

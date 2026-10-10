@@ -38,6 +38,21 @@ const state = {
     timer: null,
     timers: [],
   },
+  meteor: {
+    active: false,
+    verifying: false,
+    lane: 1,
+    score: 0,
+    timeLeft: 15,
+    timer: null,
+    spawnTimer: null,
+    frame: null,
+    lastFrame: 0,
+    startedAt: 0,
+    meteors: [],
+    nextId: 0,
+    best: Number(localStorage.getItem('summon-meteor-best') || 0) || 0,
+  },
 };
 const initData = tg?.initData || '';
 const fmt = new Intl.NumberFormat();
@@ -97,6 +112,7 @@ function gameLabel(game) {
   if (game === 'spin') return 'Cosmic spin';
   if (game === 'constellation') return 'Constellation hunt';
   if (game === 'rune_memory') return 'Rune recall';
+  if (game === 'meteor_dodge') return 'Meteor dodge';
   return 'Daily vault';
 }
 function formatDate(value) {
@@ -287,6 +303,18 @@ function renderMemoryAvailability(cooldowns = state.data?.cooldowns || {}) {
     button.innerHTML = state.memory.score ? 'Play again <span>↗</span>' : 'Start rune recall <span>↗</span>';
   }
 }
+function renderMeteorAvailability(cooldowns = state.data?.cooldowns || {}) {
+  const button = $('#meteor-start');
+  const info = cooldowns.meteor_dodge || { available: true, remaining_seconds: 0 };
+  if (!button || state.meteor.active || state.meteor.verifying) return;
+  button.disabled = state.guest || !info.available;
+  if (!info.available) {
+    button.innerHTML = `Reward window in ${duration(info.remaining_seconds)} <span>◷</span>`;
+    setText('#meteor-status', `Next verified reward in ${duration(info.remaining_seconds)}`);
+  } else {
+    button.innerHTML = state.meteor.score ? 'Play again <span>↗</span>' : 'Start meteor dodge <span>↗</span>';
+  }
+}
 function renderGames(cooldowns = {}) {
   ['daily', 'spin'].forEach((game) => {
     const info = cooldowns[game] || { available: true, remaining_seconds: 0 };
@@ -302,6 +330,7 @@ function renderGames(cooldowns = {}) {
   });
   renderPracticeAvailability(cooldowns);
   renderMemoryAvailability(cooldowns);
+  renderMeteorAvailability(cooldowns);
 }
 function startCooldownTicker() {
   clearInterval(state.cooldownTimer);
@@ -569,6 +598,170 @@ function hitMemoryTile(event) {
   }
 }
 
+const METEOR_DURATION = 15;
+function meteorState(status = state.meteor.active ? 'active' : 'idle') {
+  const arena = $('#meteor-arena');
+  const player = $('#meteor-player');
+  if (arena) arena.dataset.state = status;
+  if (player) {
+    player.style.left = `${((state.meteor.lane + 0.5) / 3) * 100}%`;
+    player.classList.toggle('is-hit', status === 'crashed');
+  }
+  setText('#meteor-time', `${Math.max(0, state.meteor.timeLeft)}s`);
+  setText('#meteor-score', state.meteor.score);
+  setText('#meteor-best', state.meteor.best);
+  setText('#meteor-progress', status === 'active' ? `${state.meteor.timeLeft}s remaining` : status === 'complete' ? 'storm cleared' : '15 seconds');
+  const copy = {
+    active: 'Stay in the safe lane · use arrows or touch',
+    crashed: `Impact detected · ${state.meteor.score} points`,
+    complete: `Storm cleared · ${state.meteor.score} points`,
+    idle: 'Ready when you are',
+  };
+  setText('#meteor-status', copy[status] || copy.idle);
+  const start = $('#meteor-start');
+  if (start) {
+    start.disabled = state.meteor.verifying;
+    start.innerHTML = state.meteor.verifying ? 'Verifying run…' : status === 'active' ? 'Abort run <span>×</span>' : status === 'complete' ? 'Play again <span>↗</span>' : status === 'crashed' ? 'Try again <span>↗</span>' : 'Start meteor dodge <span>↗</span>';
+  }
+  if (!state.meteor.active && !state.meteor.verifying) renderMeteorAvailability();
+}
+function meteorClear() {
+  clearInterval(state.meteor.timer);
+  clearInterval(state.meteor.spawnTimer);
+  state.meteor.timer = null;
+  state.meteor.spawnTimer = null;
+  if (state.meteor.frame) cancelAnimationFrame(state.meteor.frame);
+  state.meteor.frame = null;
+  state.meteor.lastFrame = 0;
+  state.meteor.meteors.forEach((meteor) => meteor.el?.remove());
+  state.meteor.meteors = [];
+}
+function meteorSpawn() {
+  if (!state.meteor.active) return;
+  const lanes = $$('[data-meteor-lane]');
+  if (!lanes.length) return;
+  const lane = Math.floor(Math.random() * lanes.length);
+  const rock = document.createElement('span');
+  rock.className = 'meteor-rock';
+  rock.textContent = ['◆', '✧', '•'][Math.floor(Math.random() * 3)];
+  rock.setAttribute('aria-hidden', 'true');
+  lanes[lane].append(rock);
+  state.meteor.meteors.push({ lane, y: -34, speed: 112 + Math.random() * 42, el: rock, id: state.meteor.nextId += 1 });
+}
+function meteorMove(direction) {
+  if (!state.meteor.active) return;
+  const next = Math.max(0, Math.min(2, state.meteor.lane + direction));
+  if (next === state.meteor.lane) {
+    haptic('light');
+    return;
+  }
+  state.meteor.lane = next;
+  const player = $('#meteor-player');
+  motion(player, { scale: [.78, 1], rotate: direction < 0 ? [8, 0] : [-8, 0], duration: 240, easing: 'easeOutBack' });
+  meteorState('active');
+  haptic('light');
+}
+function meteorFrame(now) {
+  if (!state.meteor.active) return;
+  if (!state.meteor.lastFrame) state.meteor.lastFrame = now;
+  const delta = Math.min(.055, Math.max(0, (now - state.meteor.lastFrame) / 1000));
+  state.meteor.lastFrame = now;
+  const arena = $('#meteor-arena');
+  const player = $('#meteor-player');
+  const laneTop = 43;
+  const playerHeight = player?.offsetHeight || 40;
+  const collisionTop = Math.max(0, (arena?.clientHeight || 286) - 56 - playerHeight - laneTop);
+  for (let index = state.meteor.meteors.length - 1; index >= 0; index -= 1) {
+    const meteor = state.meteor.meteors[index];
+    meteor.y += meteor.speed * delta;
+    meteor.el.style.transform = `translate(-50%, ${meteor.y}px) rotate(${18 + meteor.y * .7}deg)`;
+    if (meteor.lane === state.meteor.lane && meteor.y + 25 >= collisionTop && meteor.y <= collisionTop + playerHeight - 3) {
+      meteor.el.classList.add('is-hit');
+      finishMeteorGame(false, false, true);
+      return;
+    }
+    if (meteor.y > (arena?.clientHeight || 286) - laneTop + 38) {
+      meteor.el.remove();
+      state.meteor.meteors.splice(index, 1);
+      state.meteor.score += 25;
+    }
+  }
+  state.meteor.score = Math.max(state.meteor.score, Math.floor((now - state.meteor.startedAt) / 100));
+  setText('#meteor-score', state.meteor.score);
+  state.meteor.frame = requestAnimationFrame(meteorFrame);
+}
+function finishMeteorGame(success = false, aborted = false, crashed = false) {
+  if (!state.meteor.active && !state.meteor.verifying) return;
+  meteorClear();
+  state.meteor.active = false;
+  if (state.meteor.score > state.meteor.best) {
+    state.meteor.best = state.meteor.score;
+    localStorage.setItem('summon-meteor-best', String(state.meteor.best));
+  }
+  if (aborted) {
+    state.meteor.timeLeft = METEOR_DURATION;
+    meteorState('idle');
+    return;
+  }
+  if (!success) {
+    state.meteor.timeLeft = Math.max(0, state.meteor.timeLeft);
+    meteorState(crashed ? 'crashed' : 'idle');
+    haptic('heavy');
+    showToast(crashed ? 'A meteor found your lane. Try again.' : 'Meteor Dodge ended.', true);
+    return;
+  }
+  const finalScore = state.meteor.score;
+  state.meteor.verifying = true;
+  state.meteor.timeLeft = 0;
+  meteorState('complete');
+  haptic('heavy');
+  setText('#meteor-status', 'Verifying your survival run…');
+  api('/api/miniapp/game', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ game: 'meteor_dodge', score: finalScore, event_id: eventId() }),
+  }).then(async (result) => {
+    showReward('meteor_dodge', result.winnings);
+    await load({ quiet: true });
+  }).catch(async (error) => {
+    showToast(error.message || 'Survival complete, but the reward could not be recorded.', true);
+    setText('#meteor-status', 'Survival complete · reward verification unavailable');
+    if (error.status === 409) await load({ quiet: true }).catch(() => {});
+  }).finally(() => {
+    state.meteor.verifying = false;
+    meteorState('complete');
+    renderMeteorAvailability();
+  });
+}
+function startMeteorGame() {
+  if (state.guest) { showToast('Open the Mini App in Telegram to enter Meteor Dodge.', true); return; }
+  if (state.meteor.verifying) return;
+  if (!state.meteor.active && state.data?.cooldowns?.meteor_dodge && !state.data.cooldowns.meteor_dodge.available) {
+    showToast(`The next meteor reward is available in ${duration(state.data.cooldowns.meteor_dodge.remaining_seconds)}.`, true);
+    return;
+  }
+  if (state.meteor.active) { finishMeteorGame(false, true); return; }
+  meteorClear();
+  state.meteor.active = true;
+  state.meteor.lane = 1;
+  state.meteor.score = 0;
+  state.meteor.timeLeft = METEOR_DURATION;
+  state.meteor.startedAt = performance.now();
+  meteorState('active');
+  meteorSpawn();
+  state.meteor.spawnTimer = setInterval(meteorSpawn, 680);
+  state.meteor.timer = setInterval(() => {
+    state.meteor.timeLeft -= 1;
+    if (state.meteor.timeLeft <= 0) {
+      state.meteor.timeLeft = 0;
+      finishMeteorGame(true);
+    } else meteorState('active');
+  }, 1000);
+  state.meteor.frame = requestAnimationFrame(meteorFrame);
+  $('#meteor-arena')?.focus({ preventScroll: true });
+  haptic('light');
+}
+
 function transactionItem(item) {
   const row = document.createElement('article');
   row.className = 'transaction-item transaction-clickable';
@@ -578,9 +771,9 @@ function transactionItem(item) {
   row.dataset.eventId = item.id || '';
   row.style.setProperty('--item-delay', `${Math.min(5, Math.random() * 5) * 45}ms`);
   const icon = document.createElement('span');
-  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : 'daily';
+  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : item.game === 'meteor_dodge' ? 'meteor' : 'daily';
   icon.className = `transaction-icon ${iconMode}`;
-  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : '☀';
+  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : item.game === 'meteor_dodge' ? '☄' : '☀';
   const copy = document.createElement('span');
   copy.className = 'transaction-copy';
   const title = document.createElement('b');
@@ -706,12 +899,13 @@ function renderInsights(history = [], cooldowns = {}) {
   const spin = history.filter((item) => item.game === 'spin').length;
   const constellation = history.filter((item) => item.game === 'constellation').length;
   const memory = history.filter((item) => item.game === 'rune_memory').length;
-  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory]].sort((a, b) => b[1] - a[1]);
+  const meteor = history.filter((item) => item.game === 'meteor_dodge').length;
+  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory], ['Meteor dodge', meteor]].sort((a, b) => b[1] - a[1]);
   const favourite = history.length && modes[0][1] > 0 ? modes[0][0] : '—';
   setText('#earned-total', coins(todayTotal));
   setText('#average-reward', coins(average));
   setText('#favorite-mode', favourite);
-  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory)} verified claims` : 'waiting for activity');
+  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory, meteor)} verified claims` : 'waiting for activity');
   const available = Object.entries(cooldowns).filter(([, value]) => value?.available);
   const next = available.length ? null : Object.entries(cooldowns).sort((a, b) => (a[1]?.remaining_seconds || 0) - (b[1]?.remaining_seconds || 0))[0];
   if (!next) {
@@ -719,7 +913,7 @@ function renderInsights(history = [], cooldowns = {}) {
     setText('#next-window-detail', 'Your next reward is available.');
   } else {
     setText('#next-window', duration(next[1]?.remaining_seconds));
-    setText('#next-window-detail', next[0] === 'spin' ? 'Cosmic spin unlocks next.' : 'Daily vault unlocks next.');
+    setText('#next-window-detail', `${gameLabel(next[0])} unlocks next.`);
   }
 }
 function renderPulse(history = [], streak = {}) {
@@ -767,7 +961,7 @@ function updateLiveTicker(history = []) {
   if (!node) return;
   clearInterval(state.tickerTimer);
   const messages = history.length
-    ? history.slice(0, 4).map((item) => `${item.game === 'spin' ? 'Cosmic spin' : 'Daily vault'} · +${coins(item.amount)} coins · ${relative(item.created_at)}`)
+    ? history.slice(0, 4).map((item) => `${gameLabel(item.game)} · +${coins(item.amount)} coins · ${relative(item.created_at)}`)
     : ['Waiting for your next verified event…', 'Your ledger is protected by server checks.'];
   let index = 0;
   const paint = () => {
@@ -789,8 +983,9 @@ function openTransactionDetail(item) {
   const spin = item.game === 'spin';
   const constellation = item.game === 'constellation';
   const memory = item.game === 'rune_memory';
+  const meteor = item.game === 'meteor_dodge';
   setText('#transaction-detail-title', `${gameLabel(item.game)} receipt`);
-  setText('#transaction-detail-copy', memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
+  setText('#transaction-detail-copy', meteor ? 'Your survival run was verified and written to the secure ledger.' : memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
   setText('#transaction-detail-amount', `+${coins(item.amount)} COINS`);
   setText('#transaction-detail-type', gameLabel(item.game));
   setText('#transaction-detail-time', formatDate(item.created_at));
@@ -798,7 +993,7 @@ function openTransactionDetail(item) {
   const copyButton = $('#copy-transaction-ref');
   if (copyButton) copyButton.disabled = !item.id;
   const icon = $('#transaction-detail-icon');
-  if (icon) { icon.textContent = memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); }
+  if (icon) { icon.textContent = meteor ? '☄' : memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); icon.classList.toggle('meteor-receipt', meteor); }
   if (dialog.showModal) dialog.showModal();
 }
 async function copyTransactionReference() {
@@ -899,6 +1094,8 @@ function renderPublic(data) {
   if (state.practice.active) finishPracticeGame(true);
   if (state.memory.active) finishMemoryGame(false, true);
   if (state.memory.verifying) { state.memory.verifying = false; memoryState('idle'); }
+  if (state.meteor.active) finishMeteorGame(false, true);
+  if (state.meteor.verifying) { state.meteor.verifying = false; meteorState('idle'); }
   clearInterval(state.cooldownTimer);
   state.cooldownTimer = null;
   state.data = data;
@@ -972,7 +1169,7 @@ function launchConfetti() {
 }
 function showReward(game, amount) {
   const dialog = $('#reward');
-  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : 'Daily vault opened');
+  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : game === 'meteor_dodge' ? 'Storm cleared!' : 'Daily vault opened');
   setText('#reward-amount', `+${coins(amount)}`);
   launchConfetti();
   haptic('heavy');
@@ -1046,6 +1243,24 @@ $('#practice-start')?.addEventListener('click', startPracticeGame);
 $('#practice-target')?.addEventListener('click', hitPracticeTarget);
 $('#memory-start')?.addEventListener('click', startMemoryGame);
 $$('[data-memory-tile]').forEach((tile) => tile.addEventListener('click', hitMemoryTile));
+$('#meteor-start')?.addEventListener('click', startMeteorGame);
+$$('[data-meteor-move]').forEach((button) => button.addEventListener('click', () => meteorMove(button.dataset.meteorMove === 'left' ? -1 : 1)));
+let meteorTouchX = null;
+$('#meteor-arena')?.addEventListener('touchstart', (event) => {
+  meteorTouchX = event.changedTouches?.[0]?.clientX ?? null;
+}, { passive: true });
+$('#meteor-arena')?.addEventListener('touchend', (event) => {
+  if (meteorTouchX == null) return;
+  const endX = event.changedTouches?.[0]?.clientX ?? meteorTouchX;
+  const delta = endX - meteorTouchX;
+  meteorTouchX = null;
+  if (Math.abs(delta) > 24) meteorMove(delta < 0 ? -1 : 1);
+}, { passive: true });
+document.addEventListener('keydown', (event) => {
+  if (!state.meteor.active) return;
+  if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') { event.preventDefault(); meteorMove(-1); }
+  if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') { event.preventDefault(); meteorMove(1); }
+});
 function refreshLedgerView() {
   renderTransactions('#recent', state.data?.history || [], 4);
   renderTransactions('#history', state.data?.history || []);
@@ -1146,6 +1361,7 @@ setupTelegram();
 setupRevealObserver();
 practiceState('idle');
 memoryState('idle');
+meteorState('idle');
 navigate(initData && ['home', 'arcade', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
 loadMotionLibraries().catch(() => {});
 load().catch(() => {});
