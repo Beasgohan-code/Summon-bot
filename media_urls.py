@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 
 ALLOWED_IMAGE_HOSTS = {"files.catbox.moe", "i.ibb.co"}
-TELEGRAM_MEDIA_TYPES = {"photo", "video", "animation"}
+TELEGRAM_MEDIA_TYPES = {"photo", "video", "animation", "document"}
 
 
 def is_allowed_character_image_url(value: object) -> bool:

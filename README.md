@@ -68,16 +68,21 @@ may still expose the obsolete `/premium` `granted_at` schema error.
 
 ## Admin character upload
 
-The owner and delegated sudo admins can reply to a Telegram photo, video, or
-GIF with:
+The owner and delegated sudo admins can add a character from Telegram media:
 
 ```text
-/upload Yelan Genshin-impact 5
+/upload Yelan Genshin-impact 5   # reply to a photo, video, GIF, or media document
+/add Yelan Genshin-impact 5       # same media flow
 ```
 
+If metadata is omitted, `/upload` or `/add` starts a guided wizard. Send the
+media first or reply to the wizard prompts with the name, anime, and rarity ID.
+`/cancelupload` and `/canceladd` cancel an active wizard. `/addchar` and the
+four-argument `/add` form remain available for approved external HTTPS image
+URLs.
+
 Telegram media references are stored in MongoDB. No upload directory or bot
-token URL is created. `/addchar` and `/add` remain available for approved
-external HTTPS media URLs and do not share `/upload`'s argument contract.
+token URL is created.
 
 ## Reliability
 

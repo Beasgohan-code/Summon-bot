@@ -64,7 +64,8 @@ from commands_admin import (
     checkspawn, changetime,
     change_chance, chance_list, sudo_callback_handler,
     sudolist_command, editsudo_command, addsudo_command,
-    upload_character, add_character, update_character,
+    upload_character, character_upload_wizard_message, cancel_character_upload,
+    add_character, update_character,
     removeall, removeall_callback,
     transfer, gen_code, redeem_code,
     broadcast, save_group,
@@ -251,10 +252,20 @@ def register_handlers(application: Application):
     application.add_handler(CommandHandler("sudolist", sudolist_command))
     application.add_handler(CommandHandler("addsudo", addsudo_command))
     application.add_handler(CommandHandler(["editsudo", "rmsudo"], editsudo_command))
-    # /upload is the original media-reply workflow; /addchar and /add are
-    # the direct approved-URL workflow.
+    # /upload and /add share the replied-media wizard. /addchar remains the
+    # approved external-HTTPS URL form, and /add keeps that form as a fallback.
     application.add_handler(CommandHandler("upload", upload_character))
-    application.add_handler(CommandHandler(["addchar", "add"], add_character))
+    application.add_handler(CommandHandler("addchar", add_character))
+    application.add_handler(CommandHandler("add", add_character))
+    application.add_handler(CommandHandler(["cancelupload", "canceladd"], cancel_character_upload))
+
+    # Run the wizard before the normal catch-all without changing existing
+    # group message tracking when no wizard is active.
+    wizard_media_filter = filters.TEXT | filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL
+    application.add_handler(
+        MessageHandler(wizard_media_filter, character_upload_wizard_message),
+        group=-1,
+    )
     application.add_handler(CommandHandler(["updatechar", "update"], update_character))
     application.add_handler(CommandHandler("removeall", removeall))
     application.add_handler(CommandHandler("transfer", transfer))

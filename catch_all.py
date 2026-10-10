@@ -47,6 +47,11 @@ async def trigger_spawn_auto(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
 # ==================== 📊 UNIFIED MESSAGE, SPAM, & GROUP TRACKER ====================
 async def track_messages_and_save_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # The character wizard runs in an earlier handler group. Do not count its
+    # replies as ordinary group chatter or trigger a spawn for wizard input.
+    if context.user_data.pop("character_upload_wizard_handled", False):
+        return
+
     # 1️⃣ ചാറ്റ് ഉണ്ടെന്നും അത് പ്രൈവറ്റ് അല്ലെന്നും ഉറപ്പുവരുത്തുന്നു
     if not update.effective_chat or update.effective_chat.type == "private" or not update.effective_user:
         return

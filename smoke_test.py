@@ -33,6 +33,7 @@ assert "__PARAM0__" in storage._bind_params(
 
 media_urls = importlib.import_module("media_urls")
 assert media_urls.telegram_media_reference("photo", "file-123") == "telegram:photo:file-123"
+assert media_urls.telegram_media_reference("document", "file-123") == "telegram:document:file-123"
 assert media_urls.parse_telegram_media_reference("telegram:animation:file-123") == (
     "animation",
     "file-123",
@@ -76,6 +77,11 @@ assert "/api/miniapp/public" in app_source
 assert "Sign in through Telegram" in (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
 assert "grant_premium" in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
 assert "INSERT INTO premium" not in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
+admin_source = (ROOT / "commands_admin.py").read_text(encoding="utf-8")
+assert "character_upload_wizard_message" in admin_source
+assert "_telegram_media_from_update" in admin_source
+assert "PTB versions differ in how CommandHandler treats media captions" in admin_source
+assert "character_upload_wizard_handled" in (ROOT / "catch_all.py").read_text(encoding="utf-8")
 
 health_source = (ROOT / "health.py").read_text(encoding="utf-8")
 assert "BrokenPipeError" in health_source

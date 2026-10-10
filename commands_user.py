@@ -85,6 +85,7 @@ async def send_character_media(bot, chat_id, image_url, caption, reply_markup=No
                 "photo": bot.send_photo,
                 "video": bot.send_video,
                 "animation": bot.send_animation,
+                "document": bot.send_document,
             }[media_type]
             return await sender(
                 chat_id=chat_id,
