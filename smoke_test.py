@@ -77,6 +77,10 @@ assert "Sign in through Telegram" in (ROOT / "webapp" / "index.html").read_text(
 assert "grant_premium" in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
 assert "INSERT INTO premium" not in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
 
+health_source = (ROOT / "health.py").read_text(encoding="utf-8")
+assert "BrokenPipeError" in health_source
+assert "ConnectionResetError" in health_source
+
 for module_name in (
     "health",
     "webapp",

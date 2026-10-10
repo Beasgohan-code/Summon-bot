@@ -273,18 +273,28 @@ class HealthServer:
                         self._write(404, "application/json; charset=utf-8", b'{"ok":false,"error":"not found"}')
                     else:
                         self._write(*response)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    # A browser, Telegram WebView, proxy, or health checker may
+                    # close a request after receiving enough data. This is a
+                    # normal client disconnect, not an application failure.
+                    logger.debug("HTTP client disconnected during %s", self.path)
                 except Exception:
                     logger.exception("Health/web request failed for %s", self.path)
                     self._write(500, "application/json; charset=utf-8", b'{"ok":false,"error":"internal server error"}')
 
             def _write(self, status: int, content_type: str, body: bytes):
-                self.send_response(status)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    # Do not turn a peer closing the socket into a Telegram
+                    # error notification or a misleading health failure.
+                    logger.debug("HTTP client disconnected while writing %s", self.path)
 
             def log_message(self, format_string, *args):
                 logger.debug("HTTP %s - %s", self.address_string(), format_string % args)
