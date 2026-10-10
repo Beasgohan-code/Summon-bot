@@ -1422,6 +1422,10 @@ $('#meteor-start')?.addEventListener('click', startMeteorGame);
 $$('[data-meteor-move]').forEach((button) => button.addEventListener('click', () => meteorMove(button.dataset.meteorMove === 'left' ? -1 : 1)));
 $('#orbit-start')?.addEventListener('click', startOrbitGame);
 $('#orbit-lock')?.addEventListener('click', lockOrbit);
+$('#orbit-board')?.addEventListener('click', (event) => {
+  if (event.target.closest('#orbit-lock')) return;
+  lockOrbit();
+});
 let meteorTouchX = null;
 $('#meteor-arena')?.addEventListener('touchstart', (event) => {
   meteorTouchX = event.changedTouches?.[0]?.clientX ?? null;
