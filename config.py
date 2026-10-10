@@ -1,6 +1,7 @@
 import random
 import os
 import logging
+import secrets
 from urllib.parse import urlsplit, urlunsplit
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -71,7 +72,16 @@ def _default_webhook_url() -> str:
 
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", _default_webhook_url()).strip()
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+_configured_webhook_secret = os.getenv("WEBHOOK_SECRET", "").strip()
+if _configured_webhook_secret:
+    WEBHOOK_SECRET = _configured_webhook_secret
+else:
+    # A Render deployment can still boot safely when the optional environment
+    # variable was omitted. Telegram receives this process-local secret when
+    # set_webhook() runs below. Configure WEBHOOK_SECRET for a stable value
+    # across rolling/restarted instances; never log the generated value.
+    WEBHOOK_SECRET = secrets.token_urlsafe(48)
+    logger.warning("WEBHOOK_SECRET is not configured; generated an ephemeral webhook secret for this process")
 KEEPALIVE_INTERVAL_SECONDS = max(30, _int_env("KEEPALIVE_INTERVAL_SECONDS", 300))
 KEEPALIVE_TIMEOUT_SECONDS = max(2, _int_env("KEEPALIVE_TIMEOUT_SECONDS", 10))
 WATCHDOG_INTERVAL_SECONDS = max(15, _int_env("WATCHDOG_INTERVAL_SECONDS", 60))

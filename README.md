@@ -37,7 +37,7 @@ OWNER_PANEL_PASSWORD=...
 MONGO_URI=mongodb+srv://...
 MONGO_DB_NAME=summon_bot
 WEBHOOK_URL=https://summon-bot-wngc.onrender.com/telegram/webhook
-WEBHOOK_SECRET=...
+WEBHOOK_SECRET=...  # recommended; an ephemeral secret is generated if omitted
 LOGGER_ID=...
 ```
 
@@ -89,7 +89,9 @@ token URL is created.
 `KeepAlive` follows the Videl-style periodic health request behavior.
 `Watchdog` pings MongoDB and updates `/readyz`; it does not hide database
 failures. Telegram warnings/errors are batched to `LOGGER_ID`. Webhook POSTs
-require `X-Telegram-Bot-Api-Secret-Token` matching `WEBHOOK_SECRET`.
+require `X-Telegram-Bot-Api-Secret-Token` matching the process secret. Set
+`WEBHOOK_SECRET` for a stable secret across restarts; when it is omitted, the
+process generates a private ephemeral secret before registering the webhook.
 
 ## Validation
 
@@ -100,5 +102,7 @@ python -m unittest discover -q
 ```
 
 The bot intentionally fails fast when `BOT_TOKEN`, `OWNER_ID`,
-`OWNER_PANEL_PASSWORD`, `MONGO_URI`, `MONGO_DB_NAME`, `WEBHOOK_URL`, or
-`WEBHOOK_SECRET` is missing or invalid.
+`OWNER_PANEL_PASSWORD`, `MONGO_URI`, `MONGO_DB_NAME`, or `WEBHOOK_URL` is
+missing or invalid. A supplied `WEBHOOK_SECRET` must be 1–256 characters;
+when it is omitted, a process-local secret is generated so Render can still
+bind the health/webhook port safely.
