@@ -25,6 +25,19 @@ const state = {
     verifying: false,
     best: Number(localStorage.getItem('summon-practice-best') || 0) || 0,
   },
+  memory: {
+    active: false,
+    verifying: false,
+    phase: 'idle',
+    round: 0,
+    maxRounds: 3,
+    sequence: [],
+    input: [],
+    score: 0,
+    best: Number(localStorage.getItem('summon-memory-best') || 0) || 0,
+    timer: null,
+    timers: [],
+  },
 };
 const initData = tg?.initData || '';
 const fmt = new Intl.NumberFormat();
@@ -83,6 +96,7 @@ function duration(seconds) {
 function gameLabel(game) {
   if (game === 'spin') return 'Cosmic spin';
   if (game === 'constellation') return 'Constellation hunt';
+  if (game === 'rune_memory') return 'Rune recall';
   return 'Daily vault';
 }
 function formatDate(value) {
@@ -261,6 +275,18 @@ function renderPracticeAvailability(cooldowns = state.data?.cooldowns || {}) {
     button.innerHTML = state.practice.score ? 'Run again <span>↗</span>' : 'Start practice <span>↗</span>';
   }
 }
+function renderMemoryAvailability(cooldowns = state.data?.cooldowns || {}) {
+  const button = $('#memory-start');
+  const info = cooldowns.rune_memory || { available: true, remaining_seconds: 0 };
+  if (!button || state.memory.active || state.memory.verifying) return;
+  button.disabled = state.guest || !info.available;
+  if (!info.available) {
+    button.innerHTML = `Reward window in ${duration(info.remaining_seconds)} <span>◷</span>`;
+    setText('#memory-status', `Next verified reward in ${duration(info.remaining_seconds)}`);
+  } else if (state.memory.phase !== 'showing' && state.memory.phase !== 'input') {
+    button.innerHTML = state.memory.score ? 'Play again <span>↗</span>' : 'Start rune recall <span>↗</span>';
+  }
+}
 function renderGames(cooldowns = {}) {
   ['daily', 'spin'].forEach((game) => {
     const info = cooldowns[game] || { available: true, remaining_seconds: 0 };
@@ -275,6 +301,7 @@ function renderGames(cooldowns = {}) {
     });
   });
   renderPracticeAvailability(cooldowns);
+  renderMemoryAvailability(cooldowns);
 }
 function startCooldownTicker() {
   clearInterval(state.cooldownTimer);
@@ -384,6 +411,164 @@ function hitPracticeTarget() {
   movePracticeTarget();
 }
 
+const memoryRunes = ['✦', '◈', '✧', '◇', '⊹', '✹', '⌁', '◉', '△'];
+function memoryClearTimers() {
+  clearTimeout(state.memory.timer);
+  state.memory.timer = null;
+  state.memory.timers.forEach((timer) => clearTimeout(timer));
+  state.memory.timers = [];
+}
+function memoryState(status = state.memory.phase) {
+  const board = $('#memory-board');
+  if (board) board.dataset.state = status;
+  setText('#memory-round', `${Math.min(state.memory.round, state.memory.maxRounds)}/${state.memory.maxRounds}`);
+  setText('#memory-progress', state.memory.round ? `Round ${Math.min(state.memory.round, state.memory.maxRounds)} / ${state.memory.maxRounds}` : '3 rounds');
+  setText('#memory-score', state.memory.score);
+  setText('#memory-best', state.memory.best);
+  const copy = {
+    showing: 'Memorize the rune sequence…',
+    input: 'Repeat the sequence',
+    wrong: 'Sequence broken · run ended',
+    failed: 'Run failed · try again',
+    complete: `Run complete · ${state.memory.score} points`,
+    idle: 'Ready when you are',
+  };
+  setText('#memory-status', copy[status] || copy.idle);
+  const start = $('#memory-start');
+  if (start) {
+    start.disabled = state.memory.verifying;
+    start.innerHTML = state.memory.verifying ? 'Verifying run…' : state.memory.active ? 'Abort run <span>×</span>' : status === 'complete' ? 'Play again <span>↗</span>' : 'Start rune recall <span>↗</span>';
+  }
+  $$('[data-memory-tile]').forEach((tile) => { tile.disabled = status !== 'input'; });
+  if (!state.memory.active && !state.memory.verifying) renderMemoryAvailability();
+}
+function memoryBeginRound() {
+  if (!state.memory.active) return;
+  memoryClearTimers();
+  state.memory.round += 1;
+  state.memory.input = [];
+  state.memory.sequence = [];
+  const length = Math.min(3 + state.memory.round, 6);
+  while (state.memory.sequence.length < length) {
+    const index = Math.floor(Math.random() * memoryRunes.length);
+    if (!state.memory.sequence.includes(index)) state.memory.sequence.push(index);
+  }
+  $$('[data-memory-tile]').forEach((tile) => tile.classList.remove('showing', 'correct', 'wrong'));
+  state.memory.phase = 'showing';
+  memoryState('showing');
+  const gap = 620;
+  state.memory.sequence.forEach((index, position) => {
+    const revealTimer = setTimeout(() => {
+      const tile = $(`[data-memory-tile="${index}"]`);
+      if (!tile) return;
+      tile.classList.add('showing');
+      motion(tile, { scale: [.72, 1], rotate: [-8, 0], duration: 360, easing: 'easeOutBack' });
+      haptic('light');
+      const hideTimer = setTimeout(() => tile.classList.remove('showing'), 420);
+      state.memory.timers.push(hideTimer);
+    }, position * gap + 260);
+    state.memory.timers.push(revealTimer);
+  });
+  const inputTimer = setTimeout(memoryBeginInput, state.memory.sequence.length * gap + 520);
+  state.memory.timers.push(inputTimer);
+}
+function memoryBeginInput() {
+  if (!state.memory.active) return;
+  state.memory.phase = 'input';
+  memoryState('input');
+  state.memory.timer = setTimeout(() => finishMemoryGame(false, false, true), 9000);
+}
+function finishMemoryGame(success = false, aborted = false, timeout = false) {
+  memoryClearTimers();
+  state.memory.active = false;
+  if (state.memory.score > state.memory.best) {
+    state.memory.best = state.memory.score;
+    localStorage.setItem('summon-memory-best', String(state.memory.best));
+  }
+  if (aborted) {
+    state.memory.phase = 'idle';
+    memoryState('idle');
+    return;
+  }
+  if (!success) {
+    state.memory.phase = timeout ? 'failed' : 'wrong';
+    memoryState(state.memory.phase);
+    haptic('medium');
+    showToast(timeout ? 'Rune Recall timed out.' : 'Wrong rune. Better luck next run.', true);
+    return;
+  }
+  const finalScore = state.memory.score;
+  state.memory.verifying = true;
+  state.memory.phase = 'complete';
+  memoryState('complete');
+  haptic('heavy');
+  setText('#memory-status', 'Verifying your rune sequence…');
+  api('/api/miniapp/game', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ game: 'rune_memory', score: finalScore, event_id: eventId() }),
+  }).then(async (result) => {
+    showReward('rune_memory', result.winnings);
+    await load({ quiet: true });
+  }).catch(async (error) => {
+    showToast(error.message || 'Run completed, but the reward could not be recorded.', true);
+    setText('#memory-status', 'Run complete · reward verification unavailable');
+    if (error.status === 409) await load({ quiet: true }).catch(() => {});
+  }).finally(() => {
+    state.memory.verifying = false;
+    state.memory.phase = 'complete';
+    memoryState('complete');
+    renderMemoryAvailability();
+  });
+}
+function startMemoryGame() {
+  if (state.guest) { showToast('Open the Mini App in Telegram to enter Rune Recall.', true); return; }
+  if (state.memory.verifying) return;
+  if (!state.memory.active && state.data?.cooldowns?.rune_memory && !state.data.cooldowns.rune_memory.available) {
+    showToast(`The next rune reward is available in ${duration(state.data.cooldowns.rune_memory.remaining_seconds)}.`, true);
+    return;
+  }
+  if (state.memory.active) { finishMemoryGame(false, true); return; }
+  state.memory.active = true;
+  state.memory.phase = 'showing';
+  state.memory.round = 0;
+  state.memory.score = 0;
+  state.memory.input = [];
+  state.memory.sequence = [];
+  haptic('light');
+  memoryBeginRound();
+}
+function hitMemoryTile(event) {
+  if (!state.memory.active || state.memory.phase !== 'input') return;
+  const tile = event.currentTarget;
+  const index = Number(tile.dataset.memoryTile);
+  const expected = state.memory.sequence[state.memory.input.length];
+  if (index !== expected) {
+    tile.classList.add('wrong');
+    motion(tile, { translateX: [-5, 5, -4, 4, 0], duration: 260 });
+    finishMemoryGame(false);
+    return;
+  }
+  state.memory.input.push(index);
+  tile.classList.add('correct');
+  haptic('light');
+  const clearTimer = setTimeout(() => tile.classList.remove('correct'), 260);
+  state.memory.timers.push(clearTimer);
+  if (state.memory.input.length < state.memory.sequence.length) return;
+  clearTimeout(state.memory.timer);
+  state.memory.timer = null;
+  state.memory.score += 100 + state.memory.round * 50;
+  haptic('medium');
+  if (state.memory.round < state.memory.maxRounds) {
+    state.memory.phase = 'showing';
+    memoryState('showing');
+    const nextRound = setTimeout(memoryBeginRound, 520);
+    state.memory.timers.push(nextRound);
+  } else {
+    finishMemoryGame(true);
+  }
+}
+
 function transactionItem(item) {
   const row = document.createElement('article');
   row.className = 'transaction-item transaction-clickable';
@@ -393,9 +578,9 @@ function transactionItem(item) {
   row.dataset.eventId = item.id || '';
   row.style.setProperty('--item-delay', `${Math.min(5, Math.random() * 5) * 45}ms`);
   const icon = document.createElement('span');
-  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : 'daily';
+  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : 'daily';
   icon.className = `transaction-icon ${iconMode}`;
-  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : '☀';
+  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : '☀';
   const copy = document.createElement('span');
   copy.className = 'transaction-copy';
   const title = document.createElement('b');
@@ -520,12 +705,13 @@ function renderInsights(history = [], cooldowns = {}) {
   const daily = history.filter((item) => item.game === 'daily').length;
   const spin = history.filter((item) => item.game === 'spin').length;
   const constellation = history.filter((item) => item.game === 'constellation').length;
-  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation]].sort((a, b) => b[1] - a[1]);
+  const memory = history.filter((item) => item.game === 'rune_memory').length;
+  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory]].sort((a, b) => b[1] - a[1]);
   const favourite = history.length && modes[0][1] > 0 ? modes[0][0] : '—';
   setText('#earned-total', coins(todayTotal));
   setText('#average-reward', coins(average));
   setText('#favorite-mode', favourite);
-  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation)} verified claims` : 'waiting for activity');
+  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory)} verified claims` : 'waiting for activity');
   const available = Object.entries(cooldowns).filter(([, value]) => value?.available);
   const next = available.length ? null : Object.entries(cooldowns).sort((a, b) => (a[1]?.remaining_seconds || 0) - (b[1]?.remaining_seconds || 0))[0];
   if (!next) {
@@ -602,8 +788,9 @@ function openTransactionDetail(item) {
   state.selectedTransaction = item;
   const spin = item.game === 'spin';
   const constellation = item.game === 'constellation';
+  const memory = item.game === 'rune_memory';
   setText('#transaction-detail-title', `${gameLabel(item.game)} receipt`);
-  setText('#transaction-detail-copy', constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
+  setText('#transaction-detail-copy', memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
   setText('#transaction-detail-amount', `+${coins(item.amount)} COINS`);
   setText('#transaction-detail-type', gameLabel(item.game));
   setText('#transaction-detail-time', formatDate(item.created_at));
@@ -611,7 +798,7 @@ function openTransactionDetail(item) {
   const copyButton = $('#copy-transaction-ref');
   if (copyButton) copyButton.disabled = !item.id;
   const icon = $('#transaction-detail-icon');
-  if (icon) { icon.textContent = constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); }
+  if (icon) { icon.textContent = memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); }
   if (dialog.showModal) dialog.showModal();
 }
 async function copyTransactionReference() {
@@ -710,6 +897,8 @@ function render(data) {
 function renderPublic(data) {
   setGuestMode(true);
   if (state.practice.active) finishPracticeGame(true);
+  if (state.memory.active) finishMemoryGame(false, true);
+  if (state.memory.verifying) { state.memory.verifying = false; memoryState('idle'); }
   clearInterval(state.cooldownTimer);
   state.cooldownTimer = null;
   state.data = data;
@@ -783,7 +972,7 @@ function launchConfetti() {
 }
 function showReward(game, amount) {
   const dialog = $('#reward');
-  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : 'Daily vault opened');
+  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : 'Daily vault opened');
   setText('#reward-amount', `+${coins(amount)}`);
   launchConfetti();
   haptic('heavy');
@@ -855,6 +1044,8 @@ $$('[data-go]').forEach((button) => button.addEventListener('click', () => { hap
 $$('[data-game]').forEach((button) => button.addEventListener('click', () => play(button.dataset.game)));
 $('#practice-start')?.addEventListener('click', startPracticeGame);
 $('#practice-target')?.addEventListener('click', hitPracticeTarget);
+$('#memory-start')?.addEventListener('click', startMemoryGame);
+$$('[data-memory-tile]').forEach((tile) => tile.addEventListener('click', hitMemoryTile));
 function refreshLedgerView() {
   renderTransactions('#recent', state.data?.history || [], 4);
   renderTransactions('#history', state.data?.history || []);
@@ -954,6 +1145,7 @@ setText('#theme-icon', document.documentElement.dataset.theme === 'light' ? '☀
 setupTelegram();
 setupRevealObserver();
 practiceState('idle');
+memoryState('idle');
 navigate(initData && ['home', 'arcade', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
 loadMotionLibraries().catch(() => {});
 load().catch(() => {});

@@ -81,7 +81,7 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
 _SCHEMA_COLUMNS: dict[str, list[str]] = {
     "users": [
         "user_id", "username", "balance", "banned", "favorite", "last_daily",
-        "last_hclaim", "last_spin", "last_constellation", "font_pref", "first_name", "last_hclaim_count",
+        "last_hclaim", "last_spin", "last_constellation", "last_rune_memory", "font_pref", "first_name", "last_hclaim_count",
     ],
     "characters": ["id", "name", "anime", "rarity", "image_url", "created_at"],
     "user_collection": ["id", "user_id", "character_id", "count", "obtained_at"],
