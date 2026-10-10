@@ -121,7 +121,6 @@ def _require_driver() -> None:
 
 
 def _require_config() -> None:
-    _require_driver()
     if not using_mongo():
         raise RuntimeError(
             "MONGO_URI must be configured with a mongodb:// or mongodb+srv:// URL. "
@@ -129,6 +128,7 @@ def _require_config() -> None:
         )
     if not MONGO_DB_NAME:
         raise RuntimeError("MONGO_DB_NAME must be configured and non-empty.")
+    _require_driver()
 
 
 def _get_client():
@@ -500,6 +500,72 @@ def connect(database: str | None = None) -> MongoConnection:
 
 
 # ---------- public Mongo-native helpers for critical paths ----------
+def public_miniapp_snapshot(limit: int = 10) -> dict[str, Any]:
+    """Return deliberately non-personal public Mini App data.
+
+    Guest mode never calls the user dashboard or registers a visitor. Only
+    aggregate catalogue metadata and the already-public money leaderboard are
+    returned; Telegram IDs, collections, reward history, and account fields
+    are intentionally omitted.
+    """
+    limit = max(1, min(int(limit), 50))
+    database = _get_client()[MONGO_DB_NAME]
+
+    rarity_counts: dict[str, int] = {}
+    for document in database["characters"].find({}, {"rarity": 1}):
+        rarity = str(document.get("rarity") or "Unknown")
+        rarity_counts[rarity] = rarity_counts.get(rarity, 0) + 1
+    rarities = [
+        {"name": rarity, "count": count}
+        for rarity, count in sorted(rarity_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    leaderboard = []
+    cursor = database["users"].find(
+        {"banned": {"$ne": 1}},
+        {"username": 1, "first_name": 1, "balance": 1, "_id": 0},
+    ).sort("balance", DESCENDING).limit(limit)
+    for rank, document in enumerate(cursor, 1):
+        username = str(document.get("username") or "").lstrip("@") or None
+        name = str(document.get("first_name") or username or "Summoner")
+        leaderboard.append({
+            "rank": rank,
+            "name": name,
+            "username": username,
+            "balance": int(document.get("balance") or 0),
+        })
+    return {
+        "catalogue": {"total": sum(rarity_counts.values()), "rarities": rarities},
+        "leaderboard": leaderboard,
+    }
+
+
+def premium_expiry(user_id: int) -> str | None:
+    """Read premium expiry directly from MongoDB."""
+    document = _get_client()[MONGO_DB_NAME]["premium"].find_one(
+        {"user_id": int(user_id)}, {"expires_at": 1, "_id": 0},
+    )
+    return str(document["expires_at"]) if document and document.get("expires_at") else None
+
+
+def revoke_premium(user_id: int) -> bool:
+    """Remove premium access directly from MongoDB."""
+    result = _get_client()[MONGO_DB_NAME]["premium"].delete_one({"user_id": int(user_id)})
+    return result.deleted_count == 1
+
+
+def premium_remaining_seconds(user_id: int) -> int:
+    """Return active premium time without querying a relational schema."""
+    document = _get_client()[MONGO_DB_NAME]["premium"].find_one(
+        {"user_id": int(user_id)}, {"expires_at": 1, "_id": 0},
+    )
+    expiry = _parse_datetime(document.get("expires_at")) if document else None
+    if expiry is None:
+        return 0
+    now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    return max(0, int((expiry - now).total_seconds()))
+
+
 def initialize_database() -> None:
     """Create indexes and verify the configured MongoDB before bot startup."""
     connection = connect()
@@ -634,6 +700,38 @@ def transfer_collection(sender_id: int, receiver_id: int, character_id: str) -> 
         return True
     except PyMongoError:
         raise RuntimeError("MongoDB transactions are required for collection transfers")
+
+
+def grant_premium(user_id: int, duration_seconds: int, granted_by: int) -> str:
+    """Grant or extend premium access in MongoDB without schema assumptions.
+
+    This replaces the old SQL ``granted_at`` insert path. Existing documents
+    from an older deployment remain valid because MongoDB documents are
+    schema-flexible; the timestamp is added with ``$set`` on every grant.
+    """
+    if duration_seconds <= 0:
+        raise ValueError("Premium duration must be positive")
+    database = _get_client()[MONGO_DB_NAME]
+    collection = database["premium"]
+    now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None, microsecond=0)
+    existing = collection.find_one({"user_id": user_id})
+    current_expiry = _parse_datetime(existing.get("expires_at")) if existing else None
+    if current_expiry and current_expiry > now:
+        expiry = current_expiry + _dt.timedelta(seconds=duration_seconds)
+    else:
+        expiry = now + _dt.timedelta(seconds=duration_seconds)
+    values = {
+        "user_id": user_id,
+        "expires_at": expiry.strftime("%Y-%m-%d %H:%M:%S"),
+        "granted_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "granted_by": granted_by,
+    }
+    if existing:
+        collection.update_one({"_id": existing["_id"]}, {"$set": values})
+    else:
+        values["_id"] = _document_id("premium", values)
+        collection.insert_one(values)
+    return values["expires_at"]
 
 
 def claim_miniapp_reward(event_id: str, user_id: int, game: str, amount: int, timestamp: str, cooldown_cutoff: str) -> bool:
@@ -1126,11 +1224,17 @@ def _eval_expression(expression: str, record: dict[str, Any], records: list[dict
 
 def _parse_datetime(value: Any) -> _dt.datetime | None:
     if not value: return None
+    if isinstance(value, _dt.datetime):
+        return value.astimezone(_dt.timezone.utc).replace(tzinfo=None) if value.tzinfo else value
     try:
         text = str(value).replace("T", " ").split(".", 1)[0].replace("Z", "")
         return _dt.datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
     except ValueError:
-        return None
+        try:
+            parsed = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return parsed.astimezone(_dt.timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+        except ValueError:
+            return None
 
 
 def _integer_value(value: str, params: tuple[Any, ...]) -> int:

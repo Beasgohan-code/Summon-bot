@@ -77,6 +77,10 @@ KEEPALIVE_TIMEOUT_SECONDS = max(2, _int_env("KEEPALIVE_TIMEOUT_SECONDS", 10))
 WATCHDOG_INTERVAL_SECONDS = max(15, _int_env("WATCHDOG_INTERVAL_SECONDS", 60))
 WATCHDOG_TIMEOUT_SECONDS = max(30, _int_env("WATCHDOG_TIMEOUT_SECONDS", 180))
 WEBAPP_ENABLED = os.getenv("WEBAPP_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+# Guest mode is deliberately read-only: public catalogue/leaderboard data is
+# available outside Telegram, while balances, collections, and rewards still
+# require valid Telegram WebApp init data.
+TELEGRAM_GUEST_MODE = os.getenv("TELEGRAM_GUEST_MODE", "true").strip().lower() not in {"0", "false", "no"}
 
 #  character spawn time
 DEFAULT_SPAWN_LIMIT = 100

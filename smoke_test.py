@@ -50,6 +50,33 @@ except ValueError:
 else:
     raise AssertionError("WebApp accepted empty Telegram init data")
 
+# Guest data is intentionally a separate, read-only route. Stub only the
+# Mongo-native public repository helper so this smoke test does not need a live
+# database; private endpoints must still reject the same empty headers.
+public_snapshot = webapp.public_miniapp_snapshot
+public_guest_mode = webapp.TELEGRAM_GUEST_MODE
+webapp.TELEGRAM_GUEST_MODE = True
+webapp.public_miniapp_snapshot = lambda: {
+    "catalogue": {"total": 2, "rarities": [{"name": "Common", "count": 2}]},
+    "leaderboard": [{"rank": 1, "name": "Public Summoner", "username": None, "balance": 123}],
+}
+try:
+    public_response = webapp.handle_request("GET", "/api/miniapp/public", "", {})
+    assert public_response and public_response[0] == 200
+    assert b'"guest":true' in public_response[2]
+    assert webapp.handle_request("GET", "/api/miniapp/me", "", {})[0] == 401
+    assert webapp.handle_request("GET", "/api/miniapp/leaderboard", "", {})[0] == 401
+    assert webapp.handle_request("POST", "/api/miniapp/game", "", {}, b"{} ")[0] == 401
+finally:
+    webapp.public_miniapp_snapshot = public_snapshot
+    webapp.TELEGRAM_GUEST_MODE = public_guest_mode
+
+app_source = (ROOT / "webapp" / "app.js").read_text(encoding="utf-8")
+assert "/api/miniapp/public" in app_source
+assert "Sign in through Telegram" in (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
+assert "grant_premium" in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
+assert "INSERT INTO premium" not in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
+
 for module_name in (
     "health",
     "webapp",

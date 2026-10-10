@@ -16,6 +16,11 @@ and a same-origin Telegram Mini App.
   uses atomic balance, collection, and Mini App reward updates.
 - Telegram WebApp init data is validated server-side. Mini App winnings are
   credited to the same MongoDB user balance used by bot commands.
+- `TELEGRAM_GUEST_MODE=true` enables a same-origin, read-only public preview
+  at `/app/`. Guests can see aggregate catalogue metadata and the public coin
+  leaderboard only. Balances, private collections, account identity, reward
+  history, and all game/reward endpoints remain behind Telegram WebApp
+  init-data validation. Set it to `false` to disable the public preview.
 
 Use MongoDB Atlas or another durable replica-set deployment with backups and
 point-in-time recovery enabled. “Lossless” operation still requires the
@@ -57,7 +62,9 @@ python migrate_postgres_to_mongo.py --apply
 ```
 
 The dry run reports source row counts and `--apply` upserts stable document IDs
-without modifying the source. Review counts and backups before cutover.
+without modifying the source. Review counts and backups before cutover. After
+migration, redeploy this MongoDB-only revision; an older PostgreSQL instance
+may still expose the obsolete `/premium` `granted_at` schema error.
 
 ## Admin character upload
 

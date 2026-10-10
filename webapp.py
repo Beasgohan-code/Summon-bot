@@ -11,9 +11,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, unquote
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, TELEGRAM_GUEST_MODE
 from database import check_and_register_user, get_balance
-from storage import connect, claim_miniapp_reward
+from storage import connect, claim_miniapp_reward, public_miniapp_snapshot
 
 logger = logging.getLogger(__name__)
 _ASSET_ROOT = Path(__file__).with_name("webapp")
@@ -150,6 +150,17 @@ def _dashboard(user_id: int) -> dict:
         connection.close()
 
 
+def _public():
+    """Serve only aggregate public data to a guest browser session."""
+    if not TELEGRAM_GUEST_MODE:
+        return _json(403, {"ok": False, "error": "Guest mode is disabled"})
+    try:
+        return _json(200, {"ok": True, "guest": True, **public_miniapp_snapshot()})
+    except Exception:
+        logger.exception("Public Mini App data failed")
+        return _json(503, {"ok": False, "error": "Public Mini App data is temporarily unavailable"})
+
+
 def _me(headers: dict[str, str], query: str):
     user = _authenticated(headers, query)
     check_and_register_user(user["id"], user.get("username"), user.get("first_name"))
@@ -224,6 +235,8 @@ def handle_request(method: str, path: str, query: str, headers: dict[str, str], 
         asset = _asset(path)
         if asset is not None:
             return asset
+    if path == "/api/miniapp/public" and method == "GET":
+        return _public()
     if path == "/api/miniapp/me" and method == "GET":
         try:
             return _me(headers, query)
