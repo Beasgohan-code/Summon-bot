@@ -211,7 +211,7 @@ def _game(headers: dict[str, str], body: bytes):
     elif game == "spin":
         amount = secrets.randbelow(901) + 100
     else:
-        # The score is accepted for audit context but never controls the
+        # The score is validated for request integrity but never controls the
         # payout. The server chooses the reward and the atomic cooldown check
         # remains the only path to a coin credit.
         amount = secrets.randbelow(351) + 150
