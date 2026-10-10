@@ -14,6 +14,16 @@ const state = {
   tickerTimer: null,
   cooldownTimer: null,
   selectedTransaction: null,
+  anime: null,
+  three: null,
+  practice: {
+    active: false,
+    score: 0,
+    combo: 0,
+    timeLeft: 20,
+    timer: null,
+    best: Number(localStorage.getItem('summon-practice-best') || 0) || 0,
+  },
 };
 const initData = tg?.initData || '';
 const fmt = new Intl.NumberFormat();
@@ -131,6 +141,78 @@ function setupTelegram() {
     tg.onEvent?.('themeChanged', applyTelegramTheme);
   } catch (_) {}
 }
+function prefersReducedMotion() { return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches; }
+function motion(target, props) {
+  const anime = state.anime?.default || state.anime;
+  if (typeof anime === 'function' && !prefersReducedMotion()) return anime({ targets: target, ...props });
+  return null;
+}
+async function loadMotionLibraries() {
+  if (prefersReducedMotion()) return;
+  const [animeResult, threeResult] = await Promise.allSettled([
+    import('https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.es.js'),
+    import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js'),
+  ]);
+  if (animeResult.status === 'fulfilled') state.anime = animeResult.value.default || animeResult.value;
+  if (threeResult.status === 'fulfilled') {
+    state.three = threeResult.value;
+    setupThreeHero(threeResult.value);
+  }
+}
+function setupThreeHero(THREE) {
+  const canvas = $('#three-hero-scene');
+  const host = canvas?.parentElement;
+  if (!canvas || !host || !THREE?.WebGLRenderer) return;
+  try {
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(42, 1, .1, 30);
+    camera.position.z = 4.6;
+    const group = new THREE.Group();
+    const geometry = new THREE.BufferGeometry();
+    const count = 190;
+    const positions = new Float32Array(count * 3);
+    for (let index = 0; index < count; index += 1) {
+      const radius = 1.2 + Math.random() * 2.2;
+      const angle = Math.random() * Math.PI * 2;
+      positions[index * 3] = Math.cos(angle) * radius;
+      positions[index * 3 + 1] = (Math.random() - .5) * 2.4;
+      positions[index * 3 + 2] = Math.sin(angle) * radius * .48;
+    }
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.PointsMaterial({ color: 0x7dd3fc, size: .025, transparent: true, opacity: .7, depthWrite: false, blending: THREE.AdditiveBlending });
+    const particles = new THREE.Points(geometry, material);
+    group.add(particles);
+    const ringGeometry = new THREE.TorusGeometry(1.65, .008, 8, 96);
+    const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xa78bfa, transparent: true, opacity: .28, blending: THREE.AdditiveBlending });
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    ring.rotation.x = Math.PI * .48;
+    group.add(ring);
+    scene.add(group);
+    const resize = () => {
+      const rect = host.getBoundingClientRect();
+      renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
+      camera.aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
+      camera.updateProjectionMatrix();
+    };
+    resize();
+    window.addEventListener('resize', resize, { passive: true });
+    const tick = (time) => {
+      if (!document.hidden) {
+        group.rotation.y = time * .00008;
+        particles.rotation.z = time * .000035;
+        ring.rotation.z = -time * .00012;
+        renderer.render(scene, camera);
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    host.classList.add('three-ready');
+  } catch (_) {
+    host.classList.add('three-fallback');
+  }
+}
 
 function setGuestMode(guest) {
   state.guest = Boolean(guest);
@@ -193,6 +275,64 @@ function startCooldownTicker() {
       renderPulse(state.data.history || [], state.data.streak || {});
     }
   }, 1000);
+}
+function practiceState(status) {
+  const target = $('#practice-target');
+  const arena = $('#practice-arena');
+  if (arena) arena.dataset.state = status;
+  if (target) target.hidden = status !== 'active';
+  setText('#practice-score', state.practice.score);
+  setText('#practice-combo', `${state.practice.combo}×`);
+  setText('#practice-best', state.practice.best);
+  setText('#practice-status', status === 'active' ? `${state.practice.timeLeft}s remaining · catch the signal` : status === 'complete' ? `Run complete · ${state.practice.score} points` : 'Ready when you are');
+  const start = $('#practice-start');
+  if (start) start.innerHTML = status === 'active' ? 'Abort run <span>×</span>' : status === 'complete' ? 'Run again <span>↗</span>' : 'Start practice <span>↗</span>';
+}
+function movePracticeTarget() {
+  const arena = $('#practice-arena');
+  const target = $('#practice-target');
+  if (!arena || !target) return;
+  const inset = 18;
+  const x = inset + Math.random() * Math.max(1, arena.clientWidth - target.offsetWidth - inset * 2);
+  const y = inset + Math.random() * Math.max(1, arena.clientHeight - target.offsetHeight - inset * 2);
+  target.style.left = `${x}px`;
+  target.style.top = `${y}px`;
+  motion(target, { scale: [.65, 1], rotate: [-24, 0], duration: 420, easing: 'easeOutElastic(1, .6)' });
+}
+function finishPracticeGame(aborted = false) {
+  clearInterval(state.practice.timer);
+  state.practice.timer = null;
+  state.practice.active = false;
+  if (state.practice.score > state.practice.best) {
+    state.practice.best = state.practice.score;
+    localStorage.setItem('summon-practice-best', String(state.practice.best));
+  }
+  practiceState(aborted ? 'idle' : 'complete');
+  if (!aborted) { haptic('medium'); showToast(`Practice run complete: ${state.practice.score} points`); }
+}
+function startPracticeGame() {
+  if (state.guest) { showToast('Open the Mini App in Telegram to enter the arcade lab.', true); return; }
+  if (state.practice.active) { finishPracticeGame(true); return; }
+  state.practice.active = true;
+  state.practice.score = 0;
+  state.practice.combo = 0;
+  state.practice.timeLeft = 20;
+  practiceState('active');
+  movePracticeTarget();
+  haptic('light');
+  state.practice.timer = setInterval(() => {
+    state.practice.timeLeft -= 1;
+    if (state.practice.timeLeft <= 0) finishPracticeGame();
+    else practiceState('active');
+  }, 1000);
+}
+function hitPracticeTarget() {
+  if (!state.practice.active) return;
+  state.practice.combo += 1;
+  state.practice.score += 10 + Math.min(30, (state.practice.combo - 1) * 2);
+  haptic(state.practice.combo % 5 === 0 ? 'medium' : 'light');
+  practiceState('active');
+  movePracticeTarget();
 }
 
 function transactionItem(item) {
@@ -516,6 +656,7 @@ function render(data) {
 }
 function renderPublic(data) {
   setGuestMode(true);
+  if (state.practice.active) finishPracticeGame(true);
   clearInterval(state.cooldownTimer);
   state.cooldownTimer = null;
   state.data = data;
@@ -659,6 +800,8 @@ function setupRevealObserver() {
 
 $$('[data-go]').forEach((button) => button.addEventListener('click', () => { haptic(); navigate(button.dataset.go); }));
 $$('[data-game]').forEach((button) => button.addEventListener('click', () => play(button.dataset.game)));
+$('#practice-start')?.addEventListener('click', startPracticeGame);
+$('#practice-target')?.addEventListener('click', hitPracticeTarget);
 function refreshLedgerView() {
   renderTransactions('#recent', state.data?.history || [], 4);
   renderTransactions('#history', state.data?.history || []);
@@ -757,5 +900,7 @@ if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 setText('#theme-icon', document.documentElement.dataset.theme === 'light' ? '☀' : '☾');
 setupTelegram();
 setupRevealObserver();
+practiceState('idle');
 navigate(initData && ['home', 'arcade', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
+loadMotionLibraries().catch(() => {});
 load().catch(() => {});
