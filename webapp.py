@@ -92,7 +92,7 @@ def _dashboard(user_id: int) -> dict:
     connection = connect()
     try:
         user = connection.execute(
-            "SELECT user_id, username, first_name, balance, last_daily, last_spin FROM users WHERE user_id = ?",
+            "SELECT user_id, username, first_name, balance, last_daily, last_spin, last_constellation FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         collection = connection.execute(
@@ -140,6 +140,7 @@ def _dashboard(user_id: int) -> dict:
             "cooldowns": {
                 "daily": _cooldown(user[4] if user else None),
                 "spin": _cooldown(user[5] if user else None),
+                "constellation": _cooldown(user[6] if user else None),
             },
             "history": [
                 {"id": str(row[0]), "game": row[1], "amount": int(row[2]), "created_at": str(row[3])}
@@ -194,12 +195,26 @@ def _game(headers: dict[str, str], body: bytes):
         payload = json.loads(body or b"{}")
         game = str(payload.get("game", "daily")).lower().strip()
         event_id = str(payload.get("event_id", "")).strip()
+        try:
+            score = int(payload.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            return _json(400, {"ok": False, "error": "Invalid score"})
     except (TypeError, ValueError, json.JSONDecodeError):
         return _json(400, {"ok": False, "error": "Invalid JSON"})
-    if game not in {"daily", "spin"} or not event_id or len(event_id) > 128:
+    if game not in {"daily", "spin", "constellation"} or not event_id or len(event_id) > 128:
         return _json(400, {"ok": False, "error": "Invalid game request"})
+    if game == "constellation" and not 0 <= score <= 100_000:
+        return _json(400, {"ok": False, "error": "Invalid constellation score"})
 
-    amount = secrets.randbelow(201) + 100 if game == "daily" else secrets.randbelow(901) + 100
+    if game == "daily":
+        amount = secrets.randbelow(201) + 100
+    elif game == "spin":
+        amount = secrets.randbelow(901) + 100
+    else:
+        # The score is accepted for audit context but never controls the
+        # payout. The server chooses the reward and the atomic cooldown check
+        # remains the only path to a coin credit.
+        amount = secrets.randbelow(351) + 150
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     cooldown_cutoff = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")

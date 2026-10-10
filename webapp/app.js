@@ -22,6 +22,7 @@ const state = {
     combo: 0,
     timeLeft: 20,
     timer: null,
+    verifying: false,
     best: Number(localStorage.getItem('summon-practice-best') || 0) || 0,
   },
 };
@@ -79,7 +80,11 @@ function duration(seconds) {
   const minutes = Math.floor((value % 3600) / 60);
   return hours ? `${hours}h ${minutes}m left` : `${Math.max(1, minutes)}m left`;
 }
-function gameLabel(game) { return game === 'spin' ? 'Cosmic spin' : 'Daily vault'; }
+function gameLabel(game) {
+  if (game === 'spin') return 'Cosmic spin';
+  if (game === 'constellation') return 'Constellation hunt';
+  return 'Daily vault';
+}
 function formatDate(value) {
   const parsed = parseTimestamp(value);
   return parsed ? parsed.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'Recently';
@@ -244,6 +249,18 @@ function animateNumber(selector, target, formatter = coins, durationMs = 700) {
   requestAnimationFrame(tick);
 }
 
+function renderPracticeAvailability(cooldowns = state.data?.cooldowns || {}) {
+  const button = $('#practice-start');
+  const info = cooldowns.constellation || { available: true, remaining_seconds: 0 };
+  if (!button || state.practice.active || state.practice.verifying) return;
+  button.disabled = state.guest || !info.available;
+  if (!info.available) {
+    button.innerHTML = `Reward window in ${duration(info.remaining_seconds)} <span>◷</span>`;
+    setText('#practice-status', `Come back in ${duration(info.remaining_seconds)} for a verified coin reward`);
+  } else if (state.practice.active === false) {
+    button.innerHTML = state.practice.score ? 'Run again <span>↗</span>' : 'Start practice <span>↗</span>';
+  }
+}
 function renderGames(cooldowns = {}) {
   ['daily', 'spin'].forEach((game) => {
     const info = cooldowns[game] || { available: true, remaining_seconds: 0 };
@@ -257,6 +274,7 @@ function renderGames(cooldowns = {}) {
       button.classList.toggle('is-busy', state.busy);
     });
   });
+  renderPracticeAvailability(cooldowns);
 }
 function startCooldownTicker() {
   clearInterval(state.cooldownTimer);
@@ -286,7 +304,11 @@ function practiceState(status) {
   setText('#practice-best', state.practice.best);
   setText('#practice-status', status === 'active' ? `${state.practice.timeLeft}s remaining · catch the signal` : status === 'complete' ? `Run complete · ${state.practice.score} points` : 'Ready when you are');
   const start = $('#practice-start');
-  if (start) start.innerHTML = status === 'active' ? 'Abort run <span>×</span>' : status === 'complete' ? 'Run again <span>↗</span>' : 'Start practice <span>↗</span>';
+  if (start) {
+    start.disabled = state.practice.verifying;
+    start.innerHTML = state.practice.verifying ? 'Verifying run…' : status === 'active' ? 'Abort run <span>×</span>' : status === 'complete' ? 'Run again <span>↗</span>' : 'Start practice <span>↗</span>';
+  }
+  if (!state.practice.verifying && status !== 'active') renderPracticeAvailability();
 }
 function movePracticeTarget() {
   const arena = $('#practice-arena');
@@ -299,7 +321,7 @@ function movePracticeTarget() {
   target.style.top = `${y}px`;
   motion(target, { scale: [.65, 1], rotate: [-24, 0], duration: 420, easing: 'easeOutElastic(1, .6)' });
 }
-function finishPracticeGame(aborted = false) {
+async function finishPracticeGame(aborted = false) {
   clearInterval(state.practice.timer);
   state.practice.timer = null;
   state.practice.active = false;
@@ -308,10 +330,37 @@ function finishPracticeGame(aborted = false) {
     localStorage.setItem('summon-practice-best', String(state.practice.best));
   }
   practiceState(aborted ? 'idle' : 'complete');
-  if (!aborted) { haptic('medium'); showToast(`Practice run complete: ${state.practice.score} points`); }
+  if (aborted || state.guest) return;
+  const finalScore = state.practice.score;
+  state.practice.verifying = true;
+  practiceState('complete');
+  haptic('medium');
+  setText('#practice-status', 'Verifying your constellation run…');
+  try {
+    const result = await api('/api/miniapp/game', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game: 'constellation', score: finalScore, event_id: eventId() }),
+    });
+    showReward('constellation', result.winnings);
+    await load({ quiet: true });
+  } catch (error) {
+    showToast(error.message || 'Run completed, but the reward could not be recorded.', true);
+    setText('#practice-status', 'Run complete · reward verification unavailable');
+    if (error.status === 409) await load({ quiet: true }).catch(() => {});
+  } finally {
+    state.practice.verifying = false;
+    practiceState('complete');
+    renderPracticeAvailability();
+  }
 }
 function startPracticeGame() {
   if (state.guest) { showToast('Open the Mini App in Telegram to enter the arcade lab.', true); return; }
+  if (state.practice.verifying) return;
+  if (!state.practice.active && state.data?.cooldowns?.constellation && !state.data.cooldowns.constellation.available) {
+    showToast(`The next coin reward is available in ${duration(state.data.cooldowns.constellation.remaining_seconds)}.`, true);
+    return;
+  }
   if (state.practice.active) { finishPracticeGame(true); return; }
   state.practice.active = true;
   state.practice.score = 0;
@@ -344,8 +393,9 @@ function transactionItem(item) {
   row.dataset.eventId = item.id || '';
   row.style.setProperty('--item-delay', `${Math.min(5, Math.random() * 5) * 45}ms`);
   const icon = document.createElement('span');
-  icon.className = `transaction-icon ${item.game === 'spin' ? 'spin' : 'daily'}`;
-  icon.textContent = item.game === 'spin' ? '✹' : '☀';
+  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : 'daily';
+  icon.className = `transaction-icon ${iconMode}`;
+  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : '☀';
   const copy = document.createElement('span');
   copy.className = 'transaction-copy';
   const title = document.createElement('b');
@@ -469,11 +519,13 @@ function renderInsights(history = [], cooldowns = {}) {
   const average = history.length ? Math.round(total / history.length) : 0;
   const daily = history.filter((item) => item.game === 'daily').length;
   const spin = history.filter((item) => item.game === 'spin').length;
-  const favourite = daily === spin ? (history.length ? 'Balanced' : '—') : (daily > spin ? 'Daily vault' : 'Cosmic spin');
+  const constellation = history.filter((item) => item.game === 'constellation').length;
+  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation]].sort((a, b) => b[1] - a[1]);
+  const favourite = history.length && modes[0][1] > 0 ? modes[0][0] : '—';
   setText('#earned-total', coins(todayTotal));
   setText('#average-reward', coins(average));
   setText('#favorite-mode', favourite);
-  setText('#favorite-detail', history.length ? `${Math.max(daily, spin)} verified claims` : 'waiting for activity');
+  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation)} verified claims` : 'waiting for activity');
   const available = Object.entries(cooldowns).filter(([, value]) => value?.available);
   const next = available.length ? null : Object.entries(cooldowns).sort((a, b) => (a[1]?.remaining_seconds || 0) - (b[1]?.remaining_seconds || 0))[0];
   if (!next) {
@@ -549,8 +601,9 @@ function openTransactionDetail(item) {
   if (!dialog) return;
   state.selectedTransaction = item;
   const spin = item.game === 'spin';
+  const constellation = item.game === 'constellation';
   setText('#transaction-detail-title', `${gameLabel(item.game)} receipt`);
-  setText('#transaction-detail-copy', spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
+  setText('#transaction-detail-copy', constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
   setText('#transaction-detail-amount', `+${coins(item.amount)} COINS`);
   setText('#transaction-detail-type', gameLabel(item.game));
   setText('#transaction-detail-time', formatDate(item.created_at));
@@ -558,7 +611,7 @@ function openTransactionDetail(item) {
   const copyButton = $('#copy-transaction-ref');
   if (copyButton) copyButton.disabled = !item.id;
   const icon = $('#transaction-detail-icon');
-  if (icon) { icon.textContent = spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); }
+  if (icon) { icon.textContent = constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); }
   if (dialog.showModal) dialog.showModal();
 }
 async function copyTransactionReference() {
@@ -730,7 +783,7 @@ function launchConfetti() {
 }
 function showReward(game, amount) {
   const dialog = $('#reward');
-  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : 'Daily vault opened');
+  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : 'Daily vault opened');
   setText('#reward-amount', `+${coins(amount)}`);
   launchConfetti();
   haptic('heavy');
