@@ -1,9 +1,9 @@
 from storage import connect as db_connect
-import sqlite3
 import asyncio
 import logging
 import random
 import time
+from html import escape
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -31,6 +31,7 @@ from database import (
     ensure_user, get_balance, add_balance, remove_balance,
     is_sudo, add_sudo_user, remove_sudo_user,
     owns_character, add_to_collection, remove_from_collection,
+    transfer_balance, transfer_collection,
     get_user_collection, get_user_unique_count,
     get_character, get_random_character, get_character_count,
     get_user, get_top_anime, get_total_groups,
@@ -470,12 +471,10 @@ async def view_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
 
     try:
-   
         cursor.execute("SELECT COUNT(DISTINCT character_id) FROM user_collection WHERE user_id=?", (user.id,))
         coll_row = cursor.fetchone()
         collection_count = coll_row[0] if coll_row else 0
-    except sqlite3.OperationalError:
-
+    except Exception:
         collection_count = 0
         
     conn.close()
@@ -1509,25 +1508,18 @@ async def gift_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     giver_count = giver_row[0]
 
-    # 3. Target user-ne register cheyyunnu (DB-il illel)
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (target.id, target.username))
-
-    # 4. Giver-ude kayyil ninnu count kuraykkunnu / delete cheyyunnu
-    if giver_count > 1:
-        cursor.execute("UPDATE user_collection SET count = count - 1 WHERE user_id=? AND character_id=?", (giver_id, char_id))
-    else:
-        cursor.execute("DELETE FROM user_collection WHERE user_id=? AND character_id=?", (giver_id, char_id))
-
-    # 5. Receiver-ude (Target) collection-ilekk add cheyyunnu (Count +1 aക്കുന്നു)
-    cursor.execute("""
-        INSERT INTO user_collection (user_id, character_id, count)
-        VALUES (?, ?, 1)
-        ON CONFLICT(user_id, character_id)
-        DO UPDATE SET count = count + 1
-    """, (target.id, char_id))
-
-    conn.commit()
+    # MongoDB transaction moves the copy and creates the receiver's collection
+    # row atomically. Registering the recipient never changes an existing
+    # balance.
+    ensure_user(target.id, target.username, target.first_name)
     conn.close()
+    try:
+        transferred = transfer_collection(giver_id, target.id, char_id)
+    except RuntimeError:
+        logger.exception("Atomic character gift failed")
+        transferred = False
+    if not transferred:
+        return await update.message.reply_text("❌ The character transfer could not be completed safely. Please try again.")
 
     # 6. Aa randu varikal mathram blockquote-il ulla premium layout!
     gift_text = (
@@ -1537,11 +1529,22 @@ async def gift_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Your character has been successfully transferred!"
     )
 
-    # 7. Character media send cheyyunnu
+    # 7. Keep the original group/private confirmation and also notify the
+    # recipient directly. A blocked bot chat must not roll back a completed
+    # database transfer.
     try:
         await send_character_media(context.bot, update.effective_chat.id, media_id, gift_text)
     except Exception:
         await update.message.reply_text(gift_text, parse_mode="HTML")
+    try:
+        recipient_text = (
+            "🎁 <b>You received a character gift!</b>\n\n"
+            f"<blockquote>🎴 <b>{escape(char_name)}</b> (ID: <code>{escape(str(char_id))}</code>)\n"
+            f"👤 From: <a href='tg://user?id={giver_id}'>Summoner</a></blockquote>"
+        )
+        await send_character_media(context.bot, target.id, media_id, recipient_text)
+    except Exception:
+        logger.info("Could not send gift notification to user %s", target.id, exc_info=True)
 
 # ==========================
 # /PAY
@@ -1593,11 +1596,16 @@ async def pay_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return await update.message.reply_text("❌ Target user hasn't started the bot yet!")
 
-    # പൈസ അങ്ങോട്ടും ഇങ്ങോട്ടും മാറ്റുന്നു (Transaction)
-    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_id))
-    conn.commit()
+    # Move both balances inside one MongoDB transaction. A failed debit never
+    # leaves the receiver credited.
     conn.close()
+    try:
+        transferred = transfer_balance(user_id, target_id, amount)
+    except RuntimeError:
+        logger.exception("Atomic coin transfer failed")
+        transferred = False
+    if not transferred:
+        return await update.message.reply_text("❌ The payment could not be completed safely. Please try again.")
 
     await update.message.reply_text(
         f"💸 <b>Transaction Successful!</b>\n\n"

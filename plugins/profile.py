@@ -2,7 +2,6 @@ from storage import connect as db_connect
 import io
 import os  # 👈 ഫോണ്ട് ചെക്ക് ചെയ്യാൻ പുതിയതായി ചേർത്തു
 from pathlib import Path
-import sqlite3
 import math
 import random
 import requests
@@ -206,7 +205,6 @@ async def profile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_id, target_first, target_username = row
 
     conn = get_conn()
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     u = cur.execute("SELECT * FROM users WHERE user_id = ?", (target_id,)).fetchone()

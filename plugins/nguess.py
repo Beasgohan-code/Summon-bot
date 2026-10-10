@@ -2,7 +2,6 @@ from storage import connect as db_connect
 import time
 import random
 import re
-import sqlite3
 import logging
 import requests
 
@@ -25,9 +24,8 @@ streak_data: dict = {}       # chat_id -> {"current_streak": int, "last_correct_
 # ==================== HELPERS ====================
 
 def db_query(query: str, params: tuple = (), fetch: str = "all"):
-    """Simple sqlite3 query helper matching your bot's style."""
+    """Simple Mongo-backed query helper matching the bot's legacy style."""
     conn = db_connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     cur.execute(query, params)
     if fetch == "one":

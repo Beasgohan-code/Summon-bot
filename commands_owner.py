@@ -17,7 +17,6 @@ from database import (
 
 logger = logging.getLogger(__name__)
 
-import sqlite3
 # ==========================================
 # 🔐 CONFIGURATION
 # ==========================================

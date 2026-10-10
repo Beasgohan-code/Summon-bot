@@ -5,7 +5,6 @@ from storage import connect as db_connect
 # ============================================================
 
 import time
-import sqlite3
 import logging
 from html import escape
 
@@ -52,7 +51,6 @@ def format_time_left(seconds: float) -> str:
 
 def get_char(char_id):
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT id, name, anime, rarity, image_url FROM characters WHERE id = ?",
         (str(char_id),),
@@ -331,7 +329,6 @@ async def cb_place_bid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = time.time()
 
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     try:
         auc = conn.execute(
             "SELECT * FROM auctions WHERE id = ? AND status = 'active'",
@@ -471,7 +468,6 @@ async def handle_custom_bid_input(update: Update, context: ContextTypes.DEFAULT_
     now = time.time()
 
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
             "SELECT auction_id, created_at FROM auction_bid_input WHERE user_id = ?",
@@ -496,7 +492,6 @@ async def handle_custom_bid_input(update: Update, context: ContextTypes.DEFAULT_
     new_bid = int(text)
 
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     try:
         auc = conn.execute(
             "SELECT * FROM auctions WHERE id = ? AND status = 'active'", (auction_id,)
@@ -596,7 +591,6 @@ async def cmd_auction_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = time.time()
 
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
             """SELECT a.*, c.name AS c_name, c.rarity AS c_rarity
@@ -653,7 +647,6 @@ async def cmd_mybids(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = time.time()
 
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
             """SELECT a.id, a.highest_bid, a.end_time, a.character_id,
@@ -701,7 +694,6 @@ async def cmd_cancel_auction(update: Update, context: ContextTypes.DEFAULT_TYPE)
     auction_id = int(args[0])
 
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     try:
         auc = conn.execute("SELECT * FROM auctions WHERE id = ? AND status = 'active'", (auction_id,)).fetchone()
         if not auc:
@@ -747,7 +739,6 @@ async def job_close_auctions(context: ContextTypes.DEFAULT_TYPE):
     """Runs every 10s — closes ended auctions, transfers coins & char."""
     now = time.time()
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
             """SELECT * FROM auctions
@@ -877,7 +868,6 @@ async def cb_view_auction(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     try:
         auc = conn.execute("SELECT * FROM auctions WHERE id = ?", (auction_id,)).fetchone()
     finally:

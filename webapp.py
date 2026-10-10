@@ -1,4 +1,4 @@
-"""Same-origin Telegram Mini App for the Summon PostgreSQL runtime."""
+"""Same-origin Telegram Mini App backed by the bot's MongoDB balance."""
 from __future__ import annotations
 
 import hashlib
@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote
 
 from config import BOT_TOKEN
 from database import check_and_register_user, get_balance
-from storage import connect
+from storage import connect, claim_miniapp_reward
 
 logger = logging.getLogger(__name__)
 _ASSET_ROOT = Path(__file__).with_name("webapp")
@@ -190,33 +190,19 @@ def _game(headers: dict[str, str], body: bytes):
 
     amount = secrets.randbelow(201) + 100 if game == "daily" else secrets.randbelow(901) + 100
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    connection = connect()
+    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    cooldown_cutoff = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
     try:
         check_and_register_user(user["id"], user.get("username"), user.get("first_name"))
-        previous = connection.execute(f"SELECT last_{game} FROM users WHERE user_id = ?", (user["id"],)).fetchone()
-        if previous and previous[0]:
-            last = _parse_time(previous[0])
-            if last and (last + timedelta(hours=24) - datetime.now(timezone.utc)).total_seconds() > 0:
-                return _json(409, {"ok": False, "error": "This reward is on cooldown. Try again later."})
-        cursor = connection.execute(
-            "INSERT INTO miniapp_rewards (event_id, user_id, game, amount) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT (event_id) DO NOTHING",
-            (event_id, user["id"], game, amount),
+        claimed = claim_miniapp_reward(
+            event_id, user["id"], game, amount, timestamp, cooldown_cutoff,
         )
-        if cursor.rowcount != 1:
-            return _json(409, {"ok": False, "error": "This reward event was already claimed."})
-        connection.execute(
-            f"UPDATE users SET balance = COALESCE(balance, 0) + ?, last_{game} = ? WHERE user_id = ?",
-            (amount, now.strftime("%Y-%m-%d %H:%M:%S"), user["id"]),
-        )
-        connection.commit()
+        if not claimed:
+            return _json(409, {"ok": False, "error": "This reward is already claimed or on cooldown."})
         return _json(200, {"ok": True, "game": game, "winnings": amount, "balance": get_balance(user["id"])})
     except Exception:
-        connection.rollback()
         logger.exception("Mini App reward failed for user %s", user.get("id"))
         return _json(500, {"ok": False, "error": "Reward could not be recorded."})
-    finally:
-        connection.close()
 
 
 def _asset(path: str):

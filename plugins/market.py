@@ -1,5 +1,4 @@
 from storage import connect as db_connect
-import sqlite3
 import random
 import re
 from datetime import datetime, timedelta

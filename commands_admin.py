@@ -891,18 +891,18 @@ async def sudo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # /add COMMAND (SUDO)
 # ==========================
 async def add_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Create a character with a direct Catbox or ImgBB HTTPS image URL.
+    """Create a character with a direct approved HTTPS image URL.
 
-    Usage: /upload <name> <anime> <rarity-id> <image-url>
-    (``/addchar`` and ``/add`` are aliases.)
+    Usage: /addchar <name> <anime> <rarity-id> <image-url>
+    (``/add`` is an alias. ``/upload`` is reserved for replied Telegram media.)
     """
     if not has_sudo_privileges(update.effective_user.id):
         return await update.message.reply_text("❌ You do not have Sudo privileges!")
     if len(context.args) != 4:
         return await update.message.reply_text(
-            "💡 Usage: <code>/upload &lt;name&gt; &lt;anime&gt; &lt;rarity-id&gt; "
+            "💡 Usage: <code>/addchar &lt;name&gt; &lt;anime&gt; &lt;rarity-id&gt; "
             "&lt;Catbox-or-ImgBB-HTTPS-URL&gt;</code>\n"
-            "Aliases: <code>/addchar</code> and <code>/add</code>",
+            "Aliases: <code>/add</code>. <code>/upload</code> uses replied media.",
             parse_mode=ParseMode.HTML,
         )
 

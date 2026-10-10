@@ -2,7 +2,6 @@ from storage import connect as db_connect
 import time
 from collections import defaultdict
 import logging
-import sqlite3
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import SPAM_LIMIT, DB_NAME

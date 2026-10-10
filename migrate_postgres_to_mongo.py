@@ -105,7 +105,15 @@ def _read_table(connection, table: str, primary_key: tuple[str, ...]) -> list[di
         return rows
 
 
-def migrate(source_url: str, mongo_uri: str, mongo_db_name: str, apply: bool) -> dict[str, int]:
+def _checksum_rows(rows: list[dict[str, Any]]) -> str:
+    payload = "\n".join(
+        json.dumps({key: value for key, value in row.items() if key not in {"_id", "_legacy_table"}}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for row in sorted(rows, key=lambda item: item["_id"])
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def migrate(source_url: str, mongo_uri: str, mongo_db_name: str, apply: bool) -> dict[str, Any]:
     if psycopg2 is None:
         raise RuntimeError("Install psycopg2-binary to read PostgreSQL.")
     if MongoClient is None or ReplaceOne is None:
@@ -123,10 +131,12 @@ def migrate(source_url: str, mongo_uri: str, mongo_db_name: str, apply: bool) ->
         client.admin.command("ping")
         database = client[mongo_db_name]
         counts: dict[str, int] = {}
+        checksums: dict[str, str] = {}
         for table in _table_names(source):
             primary_key = _primary_key(source, table)
             rows = _read_table(source, table, primary_key)
             counts[table] = len(rows)
+            checksums[table] = _checksum_rows(rows)
             if not apply:
                 continue
             collection = database[table]
@@ -140,7 +150,19 @@ def migrate(source_url: str, mongo_uri: str, mongo_db_name: str, apply: bool) ->
                 collection.delete_many({"_legacy_table": table, "_id": {"$nin": keep_ids}})
             else:
                 collection.delete_many({"_legacy_table": table})
-        return counts
+        if apply:
+            database["_migration_manifests"].replace_one(
+                {"_id": "postgres_snapshot"},
+                {
+                    "_id": "postgres_snapshot",
+                    "source": "postgresql",
+                    "counts": counts,
+                    "checksums": checksums,
+                    "completed_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                },
+                upsert=True,
+            )
+        return {"counts": counts, "checksums": checksums}
     finally:
         source.close()
         client.close()
@@ -148,14 +170,14 @@ def migrate(source_url: str, mongo_uri: str, mongo_db_name: str, apply: bool) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-url", default=os.getenv("SOURCE_DATABASE_URL", os.getenv("DATABASE_URL", "")))
+    parser.add_argument("--source-url", default=os.getenv("SOURCE_DATABASE_URL", ""))
     parser.add_argument("--mongo-uri", default=os.getenv("MONGO_URI", ""))
     parser.add_argument("--mongo-db-name", default=os.getenv("MONGO_DB_NAME", "summon_bot"))
     parser.add_argument("--apply", action="store_true", help="Write the snapshot; default is a dry run.")
     args = parser.parse_args()
-    counts = migrate(args.source_url, args.mongo_uri, args.mongo_db_name, args.apply)
+    report = migrate(args.source_url, args.mongo_uri, args.mongo_db_name, args.apply)
     mode = "written" if args.apply else "found"
-    print(json.dumps({"mode": mode, "tables": counts}, indent=2, sort_keys=True))
+    print(json.dumps({"mode": mode, **report}, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

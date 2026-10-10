@@ -2,7 +2,6 @@ from storage import connect as db_connect
 # ~/summon-bot/commands_hstats.py
 # /hstats and /me — uses Telegram native <blockquote expandable> for collapse.
 
-import sqlite3
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -75,7 +74,6 @@ ACHIEVEMENTS = {
 
 def get_user_data(user_id):
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     u = cur.execute(
         "SELECT * FROM users WHERE user_id = ?", (user_id,)

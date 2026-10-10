@@ -17,7 +17,6 @@ Self-contained. Delete this file → bot still works.
 """
 from storage import connect as db_connect
 
-import sqlite3
 import logging
 from telegram import (
     InlineKeyboardButton,

@@ -4,7 +4,6 @@ import ast
 import importlib
 import pathlib
 import sys
-from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parent
@@ -21,27 +20,16 @@ storage.configure("")
 try:
     storage.connect()
 except RuntimeError as exc:
-    assert "no longer supports SQLite" in str(exc)
+    assert "MONGO_URI" in str(exc)
 else:
-    raise AssertionError("Storage accepted an empty DATABASE_URL")
+    raise AssertionError("Storage accepted an empty MONGO_URI")
 
-storage.configure("postgresql://example.invalid/summon_bot")
-assert storage.using_postgres()
-assert "ON CONFLICT DO NOTHING" in storage._translate_sql(
-    "INSERT OR IGNORE INTO users (user_id) VALUES (?)"
+storage.configure("mongodb://example.invalid/summon_bot", "summon_bot")
+assert storage.using_mongo()
+assert not storage.using_postgres()
+assert "__PARAM0__" in storage._bind_params(
+    "SELECT * FROM users WHERE user_id = ?", (123,)
 )
-assert "CURRENT_TIMESTAMP" in storage._translate_sql(
-    "SELECT * FROM premium WHERE expires_at > datetime('now')"
-)
-assert "ON CONFLICT (user_id) DO UPDATE" in storage._translate_sql(
-    "INSERT OR REPLACE INTO sudo_users (user_id, username) VALUES (?, ?)"
-)
-assert "expires_at TIMESTAMP NOT NULL" in storage._translate_sql(
-    "CREATE TABLE premium (user_id INTEGER PRIMARY KEY, expires_at TEXT NOT NULL)"
-)
-
-with patch.object(storage, "PostgresConnection", return_value="postgres-connection"):
-    assert storage.connect() == "postgres-connection"
 
 media_urls = importlib.import_module("media_urls")
 assert media_urls.telegram_media_reference("photo", "file-123") == "telegram:photo:file-123"
@@ -82,10 +70,10 @@ for module_name in (
     try:
         importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
-        # Telegram/image extras are not installed in the lightweight checker;
-        # AST parsing above still validates every module.
+        # Telegram/request extras may not be installed in the lightweight
+        # checker; AST parsing above still validates every module.
         print(f"Import skipped for {module_name}: {exc}")
     else:
         print(f"Import passed: {module_name}")
 
-print("PostgreSQL-only storage and operations smoke tests passed")
+print("MongoDB-only storage and operations smoke tests passed")

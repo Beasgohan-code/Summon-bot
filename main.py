@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from storage import connect as db_connect
+from storage import ping as ping_database
 
 
 from telegram import Update, BotCommand
@@ -19,7 +19,7 @@ from telegram.ext import (
 )	
 # ==================== CONFIG & MODULES ====================
 from config import (
-    BOT_TOKEN, OWNER_ID, BOT_USERNAME, DB_NAME, DATABASE_URL,
+    BOT_TOKEN, OWNER_ID, BOT_USERNAME, MONGO_URI, MONGO_DB_NAME,
     PRICE, HIGH_TIER, SPIN_COOLDOWN_HOURS, HCLAIM_COOLDOWN_HOURS,
     SPAM_LIMIT, DAILY_REWARD,
     ENABLE_STREAK, ENABLE_ACHIEVEMENTS, ENABLE_MARKET, ENABLE_FONT,
@@ -154,7 +154,7 @@ async def post_init(application: Application):
     await send_startup_log(
         application.bot,
         bot_username=bot.username or BOT_USERNAME,
-        database="PostgreSQL",
+        database="MongoDB",
         port=PORT,
         keepalive_url=KEEPALIVE_URL,
         webapp_enabled=WEBAPP_ENABLED,
@@ -344,13 +344,9 @@ def register_handlers(application: Application):
 
 # ==================== OPERATIONS ====================
 def database_probe():
-    """Run a cheap read-only PostgreSQL probe for readiness/watchdog checks."""
-    connection = db_connect(DB_NAME)
-    try:
-        row = connection.execute("SELECT 1").fetchone()
-        return {"ok": bool(row and row[0] == 1), "backend": "postgresql"}
-    finally:
-        connection.close()
+    """Run a live MongoDB ping for readiness/watchdog checks."""
+    ping_database()
+    return {"ok": True, "backend": "mongodb", "database": MONGO_DB_NAME}
 
 
 # ==================== MAIN ====================
@@ -359,11 +355,13 @@ def validate_config():
         raise RuntimeError("BOT_TOKEN is not configured. Set it in the environment before starting the bot.")
     if OWNER_ID <= 0:
         raise RuntimeError("OWNER_ID must be a positive Telegram user ID.")
-    if not DATABASE_URL.startswith(("postgres://", "postgresql://")):
+    if not MONGO_URI.startswith(("mongodb://", "mongodb+srv://")):
         raise RuntimeError(
-            "DATABASE_URL must be configured with a PostgreSQL connection URL. "
-            "SQLite runtime storage is no longer supported."
+            "MONGO_URI must be configured with a mongodb:// or mongodb+srv:// URL. "
+            "No PostgreSQL, SQLite, or local-file fallback is available."
         )
+    if not MONGO_DB_NAME.strip():
+        raise RuntimeError("MONGO_DB_NAME must be configured and non-empty.")
     webhook = urlsplit(WEBHOOK_URL)
     if webhook.scheme != "https" or not webhook.netloc or not webhook.path:
         raise RuntimeError(
@@ -433,7 +431,7 @@ async def async_main():
     try:
         print("🔧 Initializing database...")
         init_db()
-        health_state.mark_ready({"ok": True, "backend": "postgresql", "runtime": "webhook"})
+        health_state.mark_ready({"ok": True, "backend": "mongodb", "database": MONGO_DB_NAME, "runtime": "webhook"})
         print("✅ Database ready")
         print("🔧 Building application...")
         application = Application.builder().token(BOT_TOKEN).build()

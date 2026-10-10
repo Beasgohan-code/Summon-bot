@@ -1,5 +1,4 @@
 from storage import connect as db_connect
-import sqlite3
 from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
@@ -213,7 +212,6 @@ async def hstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_id, target_first, target_username = row
 
     conn = get_conn()
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     # User

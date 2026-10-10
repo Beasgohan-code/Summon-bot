@@ -172,7 +172,7 @@ class Watchdog:
             self.state.mark_database(result)
             return True
         except Exception as exc:
-            self.state.mark_database({"ok": False, "backend": "postgresql", "error": str(exc)})
+            self.state.mark_database({"ok": False, "backend": "mongodb", "error": str(exc)})
             logger.error("Database watchdog probe failed: %s", exc, exc_info=True)
             return False
 

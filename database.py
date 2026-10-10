@@ -1,480 +1,51 @@
-from storage import connect as db_connect
-# Step 1: Clean the garbage at lines 
+"""MongoDB repositories and domain helpers for Summon-bot.
+
+The public helper names are retained so every existing command, callback, game,
+auction, and Mini App route keeps its behavior. Persistence is provided by
+MongoDB through ``storage``; no schema bootstrap or local database is used.
+"""
+from __future__ import annotations
+
 import logging
-import sqlite3
+
 from config import DB_NAME, DEFAULT_SPAWN_LIMIT, STARTING_BALANCE, OWNER_ID
+from storage import (
+    connect as db_connect,
+    initialize_database,
+    atomic_increment,
+    increment_collection,
+    decrement_collection,
+    transfer_balance,
+    transfer_collection,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# ==========================
-# RARITY EMOJIS
-# ==========================
-
 RARITY_EMOJI = {
-    1: "⚪️",   2: "🔵",   3: "💮",   4: "⭐",
-    5: "🛸",   6: "💝",   7: "🏖️",   8: "🌧️",
-    9: "🎃",  10: "🎄",  11: "❄️",  12: "🎇",
-    13: "🎍", 14: "🎥",  15: "🎉",  16: "🌌",
-    17: "💎", 18: "🔮",
+    1: "⚪️", 2: "🔵", 3: "💮", 4: "⭐", 5: "🛸", 6: "💝",
+    7: "🏖️", 8: "🌧️", 9: "🎃", 10: "🎄", 11: "❄️", 12: "🎇",
+    13: "🎍", 14: "🎥", 15: "🎉", 16: "🌌", 17: "💎", 18: "🔮",
 }
 
 
-# ==================== DATABASE SETUP ====================
 def init_db():
-    conn = db_connect(DB_NAME)
-    cursor = conn.cursor()
-
-    # 1️⃣ users
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            balance INTEGER DEFAULT 0,
-            banned INTEGER DEFAULT 0,
-            favorite TEXT,
-            last_daily TEXT,
-            last_hclaim TEXT,
-            last_spin TEXT,
-            font_pref TEXT DEFAULT 'mono',
-            first_name TEXT
-        )
-    """)
-
-    # Safe ALTER for legacy DBs
-    for alter in [
-        "ALTER TABLE users ADD COLUMN last_daily TEXT",
-        "ALTER TABLE users ADD COLUMN last_hclaim TEXT",
-        "ALTER TABLE users ADD COLUMN last_spin TEXT",
-        "ALTER TABLE users ADD COLUMN font_pref TEXT DEFAULT 'mono'",
-        "ALTER TABLE users ADD COLUMN first_name TEXT",
-    ]:
-        try:
-            cursor.execute(alter)
-        except sqlite3.OperationalError:
-            pass
-
-    # Moderation and group state
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS warnings (
-            user_id INTEGER PRIMARY KEY,
-            warn_count INTEGER DEFAULT 0,
-            warned_by INTEGER,
-            reason TEXT,
-            warned_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS group_settings (
-            chat_id INTEGER PRIMARY KEY,
-            message_count INTEGER DEFAULT 0,
-            spawn_limit INTEGER DEFAULT 100
-        )
-    """)
-
-    # 2️⃣ user_collection
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_collection (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            character_id TEXT,
-            count INTEGER DEFAULT 1,
-            obtained_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, character_id)
-        )
-    """)
-    try:
-        cursor.execute("ALTER TABLE user_collection ADD COLUMN count INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE user_collection ADD COLUMN obtained_at TEXT DEFAULT CURRENT_TIMESTAMP")
-    except sqlite3.OperationalError:
-        pass
-
-    # 3️⃣ characters
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS characters (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            anime TEXT,
-            rarity TEXT,
-            image_url TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    try:
-        cursor.execute("ALTER TABLE characters ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE characters ADD COLUMN image_url TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    # 4️⃣ redeem_codes
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS redeem_codes (
-            code TEXT PRIMARY KEY,
-            character_id TEXT,
-            uses INTEGER DEFAULT 1,
-            created_by INTEGER,
-            reward INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    try:
-        cursor.execute("ALTER TABLE redeem_codes ADD COLUMN reward INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-
-    # 5️⃣ banned_users
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS banned_users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            reason TEXT,
-            banned_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    try:
-        cursor.execute("ALTER TABLE banned_users ADD COLUMN reason TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    # 8️⃣ claim_list (hclaim weights)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS claim_list (
-            rarity_id INTEGER PRIMARY KEY,
-            chance REAL,
-            rarity_name TEXT
-        )
-    """)
-    try:
-        cursor.execute("ALTER TABLE claim_list ADD COLUMN rarity_name TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    cursor.execute("SELECT COUNT(*) FROM claim_list")
-    if cursor.fetchone()[0] == 0:
-        exact_chances = [
-            (1, 400.0, "Common"),
-            (2, 0.0, "Rare"),
-            (3, 1200.0, "Special"),
-            (4, 600.0, "Legendary"),
-            (5, 300.0, "Mythic"),
-            (6, 50.0, "Valentine"),
-            (7, 50.0, "Summer"),
-            (8, 50.0, "Rainy"),
-            (9, 50.0, "Halloween"),
-            (10, 0.0, "Christmas"),
-            (11, 2.0, "Winter"),
-            (12, 50.0, "New Year"),
-            (13, 40.0, "Festival"),
-            (14, 0.0, "AMV"),
-            (15, 100.0, "Event"),
-            (16, 40.0, "Celestial"),
-            (17, 0.0, "Luxury"),
-            (18, 20.0, "Limited"),
-        ]
-        cursor.executemany(
-            "INSERT INTO claim_list (rarity_id, chance, rarity_name) VALUES (?, ?, ?)",
-            exact_chances,
-        )
-
-    # 9️⃣ rarity_chances (main spawn pool)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS rarity_chances (
-            rarity_id INTEGER PRIMARY KEY,
-            rarity_name TEXT,
-            chance_value INTEGER
-        )
-    """)
-    cursor.execute("SELECT COUNT(*) FROM rarity_chances")
-    if cursor.fetchone()[0] == 0:
-        default_chances = [
-            (1, "Common", 4500),   (2, "Rare", 2500),
-            (3, "Special", 1200),  (4, "Legendary", 600),
-            (5, "Mythic", 300),    (6, "Valentine", 50),
-            (7, "Summer", 50),     (8, "Rainy", 50),
-            (9, "Halloween", 50),  (10, "Christmas", 50),
-            (11, "Winter", 50),    (12, "New Year", 50),
-            (13, "Festival", 40),  (14, "AMV", 10),
-            (15, "Event", 100),    (16, "Celestial", 40),
-            (17, "Luxury", 30),    (18, "Limited", 20),
-        ]
-        cursor.executemany(
-            "INSERT OR IGNORE INTO rarity_chances VALUES (?, ?, ?)",
-            default_chances,
-        )
-
-    # 🔟 groups
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS groups (
-            chat_id INTEGER PRIMARY KEY,
-            title TEXT,
-            message_count INTEGER DEFAULT 0
-        )
-    """)
-
-    # Legacy/admin tables used by command handlers
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sudo_users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            added_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sudo_admins (
-            user_id INTEGER PRIMARY KEY,
-            added_by INTEGER DEFAULT 0,
-            added_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # Premium access and per-command cooldowns
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS premium (
-            user_id INTEGER PRIMARY KEY,
-            expires_at TEXT NOT NULL,
-            granted_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            granted_by INTEGER
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS cooldowns (
-            user_id INTEGER NOT NULL,
-            command TEXT NOT NULL,
-            last_used TEXT NOT NULL,
-            PRIMARY KEY (user_id, command)
-        )
-    """)
-
-    # Consumable market items
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            item_id TEXT NOT NULL,
-            uses_remaining INTEGER NOT NULL DEFAULT 1,
-            purchased_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            expires_at TEXT NOT NULL
-        )
-    """)
-
-    # Auction tables are also initialized here so a fresh install is complete.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS auctions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            character_id TEXT NOT NULL,
-            seller_id INTEGER NOT NULL,
-            start_price INTEGER NOT NULL,
-            highest_bid INTEGER NOT NULL,
-            highest_bidder_id INTEGER,
-            chat_id INTEGER,
-            pinned_image_url INTEGER,
-            created_at REAL NOT NULL,
-            end_time REAL NOT NULL,
-            status TEXT DEFAULT 'active'
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS auction_bids (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            auction_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            created_at REAL NOT NULL
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS auction_bid_input (
-            user_id INTEGER PRIMARY KEY,
-            auction_id INTEGER NOT NULL,
-            created_at REAL NOT NULL
-        )
-    """)
-
-    # ==================== 🆕 NEW FEATURES ====================
-
-    # 🔥 Streak system
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_streaks (
-            user_id INTEGER PRIMARY KEY,
-            streak_count INTEGER DEFAULT 0,
-            last_streak_date TEXT,
-            highest_streak INTEGER DEFAULT 0
-        )
-    """)
-
-    # 🏅 Achievements
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_achievements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            achievement_id TEXT,
-            unlocked_at TEXT,
-            UNIQUE(user_id, achievement_id)
-        )
-    """)
-
-    # 💰 Market transactions
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS market_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            char_id TEXT,
-            transaction_type TEXT,
-            price INTEGER,
-            timestamp TEXT
-        )
-    """)
-
-    # 🛒 Market pool
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS market_pool (
-            char_id TEXT,
-            displayed_at TEXT
-        )
-    """)
-
-    # 🎛️ User preferences (collection_mode, glow)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_preferences (
-            user_id INTEGER PRIMARY KEY,
-            collection_mode TEXT DEFAULT 'anime',
-            profile_glow INTEGER DEFAULT 1,
-            market_filter TEXT DEFAULT 'all'
-        )
-    """)
-
-    
-
-    # 🎁 Gift log
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS gift_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            from_user INTEGER,
-            to_user INTEGER,
-            char_id TEXT,
-            gifted_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # 📊 Activity log
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS activity_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            action TEXT,
-            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # 🎮 Mini App reward ledger. Rewards are generated on the server and the
-    # event ID prevents a retried browser request from paying twice.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS miniapp_rewards (
-            event_id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            game TEXT NOT NULL,
-            amount INTEGER NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # ==================== 🔧 MIGRATIONS ====================
-    # Add new columns to existing tables (idempotent)
-    migrations = [
-        ("group_settings", "message_count", "INTEGER DEFAULT 0"),
-        ("group_settings", "spawn_limit", "INTEGER DEFAULT 100"),
-        ("groups", "title", "TEXT"),
-        ("groups", "message_count", "INTEGER DEFAULT 0"),
-        ("users", "font_pref", "TEXT DEFAULT 'normal'"),
-        ("users", "last_hclaim_count", "INTEGER DEFAULT 0"),
-    ]
-    for table, column, col_type in migrations:
-        try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-            logger.info(f"✅ Added column {table}.{column}")
-        except sqlite3.OperationalError:
-            pass  # column already exists
-
-    # Telegram IDs and supergroup chat IDs are larger than PostgreSQL's
-    # 32-bit INTEGER range (for example, -1003908312302). Upgrade every
-    # identity-bearing column so message tracking never fails on a real group.
-    telegram_id_columns = {
-        "users": ("user_id",),
-        "warnings": ("user_id", "warned_by"),
-        "group_settings": ("chat_id",),
-        "user_collection": ("user_id",),
-        "redeem_codes": ("created_by",),
-        "banned_users": ("user_id",),
-        "groups": ("chat_id",),
-        "sudo_users": ("user_id",),
-        "sudo_admins": ("user_id", "added_by"),
-        "premium": ("user_id", "granted_by"),
-        "cooldowns": ("user_id",),
-        "user_inventory": ("user_id",),
-        "auctions": ("seller_id", "highest_bidder_id", "chat_id"),
-        "auction_bids": ("user_id",),
-        "auction_bid_input": ("user_id",),
-        "user_streaks": ("user_id",),
-        "user_achievements": ("user_id",),
-        "market_transactions": ("user_id",),
-        "user_preferences": ("user_id",),
-        "gift_log": ("from_user", "to_user"),
-        "activity_log": ("user_id",),
-        "miniapp_rewards": ("user_id",),
-    }
-    for table, columns in telegram_id_columns.items():
-        for column in columns:
-            try:
-                cursor.execute(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE BIGINT")
-            except sqlite3.OperationalError:
-                # SQLite does not support ALTER COLUMN; production is
-                # PostgreSQL, where the migration above is applied.
-                pass
-
-    # Older PostgreSQL boots created these SQLite-compatible date columns as
-    # TEXT. Convert them once so comparisons against CURRENT_TIMESTAMP and
-    # interval arithmetic remain type-safe after the SQL compatibility layer
-    # is removed or bypassed.
-    timestamp_columns = {
-        "premium": ("expires_at", "granted_at"),
-        "cooldowns": ("last_used",),
-        "user_inventory": ("purchased_at", "expires_at"),
-    }
-    for table, columns in timestamp_columns.items():
-        for column in columns:
-            try:
-                cursor.execute(
-                    f"ALTER TABLE {table} ALTER COLUMN {column} TYPE TIMESTAMP "
-                    f"USING NULLIF({column}::text, '')::timestamp"
-                )
-            except sqlite3.OperationalError:
-                # SQLite does not support ALTER COLUMN; PostgreSQL applies the
-                # conversion and safely keeps already-timestamp columns.
-                pass
-    # =========================================================
-
-    conn.commit()
-    conn.close()
-    logger.info("✅ Database initialized")
+    """Verify MongoDB and create required unique/query indexes."""
+    initialize_database()
+    logger.info("MongoDB database initialized")
 
 
 def check_and_register_user(user_id: int, username: str = None, first_name: str = None):
+    """Register a user once without resetting an existing balance."""
     conn = db_connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR IGNORE INTO users (user_id, username, first_name, balance, banned) VALUES (?, ?, ?, ?, ?)",
-        (user_id, username, first_name, STARTING_BALANCE, 0)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, first_name, balance, banned) VALUES (?, ?, ?, ?, ?)",
+            (user_id, username, first_name, STARTING_BALANCE, 0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ==================== 🔥 STREAK CONFIG ====================
@@ -561,15 +132,11 @@ def get_balance(user_id: int) -> int:
 
 
 def add_balance(user_id: int, amount: int):
-    execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    return atomic_increment("users", {"user_id": user_id}, "balance", int(amount))
 
 
 def remove_balance(user_id: int, amount: int) -> bool:
-    bal = get_balance(user_id)
-    if bal < amount:
-        return False
-    execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-    return True
+    return atomic_increment("users", {"user_id": user_id}, "balance", -int(amount), minimum=int(amount))
 
 
 # Collection helpers
@@ -581,27 +148,11 @@ def owns_character(user_id: int, char_id: str) -> bool:
 
 
 def add_to_collection(user_id: int, char_id: str):
-    execute("""
-        INSERT INTO user_collection (user_id, character_id, count)
-        VALUES (?, ?, 1)
-        ON CONFLICT(user_id, character_id) DO UPDATE SET count = count + 1
-    """, (user_id, char_id))
+    return increment_collection(user_id, char_id, 1)
 
 
 def remove_from_collection(user_id: int, char_id: str) -> bool:
-    row = fetch_one(
-        "SELECT count FROM user_collection WHERE user_id = ? AND character_id = ?",
-        (user_id, char_id)
-    )
-    if not row or row[0] <= 0:
-        return False
-    if row[0] == 1:
-        execute("DELETE FROM user_collection WHERE user_id = ? AND character_id = ?",
-                (user_id, char_id))
-    else:
-        execute("UPDATE user_collection SET count = count - 1 WHERE user_id = ? AND character_id = ?",
-                (user_id, char_id))
-    return True
+    return decrement_collection(user_id, char_id)
 
 
 # Ban helpers
