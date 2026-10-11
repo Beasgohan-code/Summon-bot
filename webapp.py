@@ -92,7 +92,7 @@ def _dashboard(user_id: int) -> dict:
     connection = connect()
     try:
         user = connection.execute(
-            "SELECT user_id, username, first_name, balance, last_daily, last_spin, last_constellation, last_rune_memory, last_meteor_dodge, last_orbit_lock FROM users WHERE user_id = ?",
+            "SELECT user_id, username, first_name, balance, last_daily, last_spin, last_constellation, last_rune_memory, last_meteor_dodge, last_orbit_lock, last_prism_sort FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         collection = connection.execute(
@@ -144,6 +144,7 @@ def _dashboard(user_id: int) -> dict:
                 "rune_memory": _cooldown(user[7] if user else None),
                 "meteor_dodge": _cooldown(user[8] if user else None),
                 "orbit_lock": _cooldown(user[9] if user else None),
+                "prism_sort": _cooldown(user[10] if user else None),
             },
             "history": [
                 {"id": str(row[0]), "game": row[1], "amount": int(row[2]), "created_at": str(row[3])}
@@ -204,9 +205,9 @@ def _game(headers: dict[str, str], body: bytes):
             return _json(400, {"ok": False, "error": "Invalid score"})
     except (TypeError, ValueError, json.JSONDecodeError):
         return _json(400, {"ok": False, "error": "Invalid JSON"})
-    if game not in {"daily", "spin", "constellation", "rune_memory", "meteor_dodge", "orbit_lock"} or not event_id or len(event_id) > 128:
+    if game not in {"daily", "spin", "constellation", "rune_memory", "meteor_dodge", "orbit_lock", "prism_sort"} or not event_id or len(event_id) > 128:
         return _json(400, {"ok": False, "error": "Invalid game request"})
-    if game in {"constellation", "rune_memory", "meteor_dodge", "orbit_lock"} and not 0 <= score <= 100_000:
+    if game in {"constellation", "rune_memory", "meteor_dodge", "orbit_lock", "prism_sort"} and not 0 <= score <= 100_000:
         return _json(400, {"ok": False, "error": "Invalid game score"})
 
     if game == "daily":
@@ -229,6 +230,9 @@ def _game(headers: dict[str, str], body: bytes):
     elif game == "orbit_lock":
         # Orbit Lock sends only a bounded result; the server chooses the payout.
         amount = secrets.randbelow(321) + 220
+    elif game == "prism_sort":
+        # Prism Sort sends only a bounded result; the server chooses the payout.
+        amount = secrets.randbelow(321) + 160
     else:
         return _json(400, {"ok": False, "error": "Unsupported game"})
     now = datetime.now(timezone.utc).replace(tzinfo=None)

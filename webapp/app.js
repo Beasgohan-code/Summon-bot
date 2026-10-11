@@ -69,6 +69,18 @@ const state = {
     nextRoundTimer: null,
     roundStartedAt: 0,
   },
+  prism: {
+    active: false,
+    verifying: false,
+    timeLeft: 15,
+    score: 0,
+    combo: 0,
+    target: 0,
+    locked: false,
+    best: Number(localStorage.getItem('summon-prism-best') || 0) || 0,
+    timer: null,
+    targetTimer: null,
+  },
 };
 const initData = tg?.initData || '';
 const fmt = new Intl.NumberFormat();
@@ -130,6 +142,7 @@ function gameLabel(game) {
   if (game === 'rune_memory') return 'Rune recall';
   if (game === 'meteor_dodge') return 'Meteor dodge';
   if (game === 'orbit_lock') return 'Orbit lock';
+  if (game === 'prism_sort') return 'Prism sort';
   return 'Daily vault';
 }
 function formatDate(value) {
@@ -344,6 +357,18 @@ function renderOrbitAvailability(cooldowns = state.data?.cooldowns || {}) {
     button.innerHTML = state.orbit.score ? 'Run again <span>↗</span>' : 'Start orbit lock <span>↗</span>';
   }
 }
+function renderPrismAvailability(cooldowns = state.data?.cooldowns || {}) {
+  const button = $('#prism-start');
+  const info = cooldowns.prism_sort || { available: true, remaining_seconds: 0 };
+  if (!button || state.prism.active || state.prism.verifying) return;
+  button.disabled = state.guest || !info.available;
+  if (!info.available) {
+    button.innerHTML = `Reward window in ${duration(info.remaining_seconds)} <span>◷</span>`;
+    setText('#prism-status', `Next verified reward in ${duration(info.remaining_seconds)}`);
+  } else {
+    button.innerHTML = state.prism.score ? 'Run again <span>↗</span>' : 'Start prism sort <span>↗</span>';
+  }
+}
 function renderGames(cooldowns = {}) {
   ['daily', 'spin'].forEach((game) => {
     const info = cooldowns[game] || { available: true, remaining_seconds: 0 };
@@ -361,6 +386,7 @@ function renderGames(cooldowns = {}) {
   renderMemoryAvailability(cooldowns);
   renderMeteorAvailability(cooldowns);
   renderOrbitAvailability(cooldowns);
+  renderPrismAvailability(cooldowns);
 }
 function startCooldownTicker() {
   clearInterval(state.cooldownTimer);
@@ -933,6 +959,144 @@ function startOrbitGame() {
   haptic('light');
 }
 
+const prismColors = [
+  { name: 'Aqua', glyph: '◆', className: 'aqua' },
+  { name: 'Violet', glyph: '✦', className: 'violet' },
+  { name: 'Gold', glyph: '✧', className: 'gold' },
+];
+function prismState(status = state.prism.active ? 'active' : 'idle') {
+  const board = $('#prism-board');
+  const target = prismColors[state.prism.target] || prismColors[0];
+  if (board) board.dataset.state = status;
+  setText('#prism-time', `${Math.max(0, state.prism.timeLeft)}s`);
+  setText('#prism-score', state.prism.score);
+  setText('#prism-combo', `${state.prism.combo}×`);
+  setText('#prism-best', state.prism.best);
+  setText('#prism-target-label', status === 'active' || status === 'locked' ? `Sort ${target.name}` : status === 'complete' ? 'run cleared' : 'Ready when you are');
+  const targetGlyph = $('#prism-target-glyph');
+  if (targetGlyph) {
+    targetGlyph.textContent = target.glyph;
+    targetGlyph.className = `prism-target-glyph ${target.className}`;
+  }
+  setText('#prism-progress', status === 'active' || status === 'locked' ? `${state.prism.timeLeft}s remaining` : status === 'complete' ? 'colors aligned' : '15 seconds');
+  const copy = {
+    active: 'Match the glowing prism · keys 1, 2, 3 also work',
+    locked: 'Good sort · next prism incoming…',
+    complete: `Run complete · ${state.prism.score} points`,
+    idle: 'Ready when you are',
+  };
+  setText('#prism-status', copy[status] || copy.idle);
+  const start = $('#prism-start');
+  if (start) {
+    start.disabled = state.prism.verifying;
+    start.innerHTML = state.prism.verifying ? 'Verifying run…' : status === 'active' || status === 'locked' ? 'Abort run <span>×</span>' : status === 'complete' ? 'Run again <span>↗</span>' : 'Start prism sort <span>↗</span>';
+  }
+  $$('[data-prism-color]').forEach((button, index) => {
+    button.disabled = status !== 'active' || state.prism.verifying;
+    button.classList.toggle('selected', index === state.prism.target && status === 'active');
+  });
+  if (!state.prism.active && !state.prism.verifying) renderPrismAvailability();
+}
+function prismClearTimers() {
+  clearInterval(state.prism.timer);
+  clearTimeout(state.prism.targetTimer);
+  state.prism.timer = null;
+  state.prism.targetTimer = null;
+  state.prism.locked = false;
+  $$('[data-prism-color]').forEach((button) => button.classList.remove('correct', 'wrong', 'selected'));
+}
+function prismNextTarget() {
+  state.prism.target = Math.floor(Math.random() * prismColors.length);
+  prismState('active');
+}
+function choosePrism(event) {
+  if (!state.prism.active || state.prism.locked) return;
+  const choice = Number(event.currentTarget.dataset.prismColor);
+  state.prism.locked = true;
+  const correct = choice === state.prism.target;
+  const button = event.currentTarget;
+  button.classList.add(correct ? 'correct' : 'wrong');
+  if (correct) {
+    state.prism.combo += 1;
+    state.prism.score += 15 + Math.min(45, (state.prism.combo - 1) * 5);
+    haptic(state.prism.combo % 4 === 0 ? 'medium' : 'light');
+    prismState('locked');
+  } else {
+    state.prism.combo = 0;
+    haptic('heavy');
+    setText('#prism-status', `Wrong prism · target was ${prismColors[state.prism.target].name}`);
+  }
+  state.prism.targetTimer = setTimeout(() => {
+    button.classList.remove('correct', 'wrong');
+    state.prism.locked = false;
+    prismNextTarget();
+  }, correct ? 260 : 420);
+}
+function finishPrismGame(success = false, aborted = false) {
+  if (!state.prism.active && !state.prism.verifying) return;
+  prismClearTimers();
+  state.prism.active = false;
+  if (state.prism.score > state.prism.best) {
+    state.prism.best = state.prism.score;
+    localStorage.setItem('summon-prism-best', String(state.prism.best));
+  }
+  if (aborted) {
+    state.prism.timeLeft = 15;
+    state.prism.score = 0;
+    state.prism.combo = 0;
+    prismState('idle');
+    return;
+  }
+  if (!success) return;
+  const finalScore = state.prism.score;
+  state.prism.verifying = true;
+  state.prism.timeLeft = 0;
+  prismState('complete');
+  haptic('heavy');
+  setText('#prism-status', 'Verifying your prism run…');
+  api('/api/miniapp/game', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ game: 'prism_sort', score: finalScore, event_id: eventId() }),
+  }).then(async (result) => {
+    showReward('prism_sort', result.winnings);
+    await load({ quiet: true });
+  }).catch(async (error) => {
+    showToast(error.message || 'Run complete, but the reward could not be recorded.', true);
+    setText('#prism-status', 'Run complete · reward verification unavailable');
+    if (error.status === 409) await load({ quiet: true }).catch(() => {});
+  }).finally(() => {
+    state.prism.verifying = false;
+    prismState('complete');
+    renderPrismAvailability();
+  });
+}
+function startPrismGame() {
+  if (state.guest) { showToast('Open the Mini App in Telegram to enter Prism Sort.', true); return; }
+  if (state.prism.verifying) return;
+  if (!state.prism.active && state.data?.cooldowns?.prism_sort && !state.data.cooldowns.prism_sort.available) {
+    showToast(`The next prism reward is available in ${duration(state.data.cooldowns.prism_sort.remaining_seconds)}.`, true);
+    return;
+  }
+  if (state.prism.active) { finishPrismGame(false, true); return; }
+  prismClearTimers();
+  state.prism.active = true;
+  state.prism.timeLeft = 15;
+  state.prism.score = 0;
+  state.prism.combo = 0;
+  state.prism.target = Math.floor(Math.random() * prismColors.length);
+  prismState('active');
+  state.prism.timer = setInterval(() => {
+    state.prism.timeLeft -= 1;
+    if (state.prism.timeLeft <= 0) {
+      state.prism.timeLeft = 0;
+      finishPrismGame(true);
+    } else prismState('active');
+  }, 1000);
+  $('#prism-board')?.focus({ preventScroll: true });
+  haptic('light');
+}
+
 function transactionItem(item) {
   const row = document.createElement('article');
   row.className = 'transaction-item transaction-clickable';
@@ -942,9 +1106,9 @@ function transactionItem(item) {
   row.dataset.eventId = item.id || '';
   row.style.setProperty('--item-delay', `${Math.min(5, Math.random() * 5) * 45}ms`);
   const icon = document.createElement('span');
-  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : item.game === 'meteor_dodge' ? 'meteor' : item.game === 'orbit_lock' ? 'orbit' : 'daily';
+  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : item.game === 'meteor_dodge' ? 'meteor' : item.game === 'orbit_lock' ? 'orbit' : item.game === 'prism_sort' ? 'prism' : 'daily';
   icon.className = `transaction-icon ${iconMode}`;
-  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : item.game === 'meteor_dodge' ? '☄' : item.game === 'orbit_lock' ? '◎' : '☀';
+  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : item.game === 'meteor_dodge' ? '☄' : item.game === 'orbit_lock' ? '◎' : item.game === 'prism_sort' ? '⬢' : '☀';
   const copy = document.createElement('span');
   copy.className = 'transaction-copy';
   const title = document.createElement('b');
@@ -1072,12 +1236,13 @@ function renderInsights(history = [], cooldowns = {}) {
   const memory = history.filter((item) => item.game === 'rune_memory').length;
   const meteor = history.filter((item) => item.game === 'meteor_dodge').length;
   const orbit = history.filter((item) => item.game === 'orbit_lock').length;
-  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory], ['Meteor dodge', meteor], ['Orbit lock', orbit]].sort((a, b) => b[1] - a[1]);
+  const prism = history.filter((item) => item.game === 'prism_sort').length;
+  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory], ['Meteor dodge', meteor], ['Orbit lock', orbit], ['Prism sort', prism]].sort((a, b) => b[1] - a[1]);
   const favourite = history.length && modes[0][1] > 0 ? modes[0][0] : '—';
   setText('#earned-total', coins(todayTotal));
   setText('#average-reward', coins(average));
   setText('#favorite-mode', favourite);
-  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory, meteor, orbit)} verified claims` : 'waiting for activity');
+  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory, meteor, orbit, prism)} verified claims` : 'waiting for activity');
   const available = Object.entries(cooldowns).filter(([, value]) => value?.available);
   const next = available.length ? null : Object.entries(cooldowns).sort((a, b) => (a[1]?.remaining_seconds || 0) - (b[1]?.remaining_seconds || 0))[0];
   if (!next) {
@@ -1157,8 +1322,9 @@ function openTransactionDetail(item) {
   const memory = item.game === 'rune_memory';
   const meteor = item.game === 'meteor_dodge';
   const orbit = item.game === 'orbit_lock';
+  const prism = item.game === 'prism_sort';
   setText('#transaction-detail-title', `${gameLabel(item.game)} receipt`);
-  setText('#transaction-detail-copy', orbit ? 'Your orbit timing run was verified and written to the secure ledger.' : meteor ? 'Your survival run was verified and written to the secure ledger.' : memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
+  setText('#transaction-detail-copy', prism ? 'Your color-sorting run was verified and written to the secure ledger.' : orbit ? 'Your orbit timing run was verified and written to the secure ledger.' : meteor ? 'Your survival run was verified and written to the secure ledger.' : memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
   setText('#transaction-detail-amount', `+${coins(item.amount)} COINS`);
   setText('#transaction-detail-type', gameLabel(item.game));
   setText('#transaction-detail-time', formatDate(item.created_at));
@@ -1166,7 +1332,7 @@ function openTransactionDetail(item) {
   const copyButton = $('#copy-transaction-ref');
   if (copyButton) copyButton.disabled = !item.id;
   const icon = $('#transaction-detail-icon');
-  if (icon) { icon.textContent = orbit ? '◎' : meteor ? '☄' : memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); icon.classList.toggle('meteor-receipt', meteor); icon.classList.toggle('orbit-receipt', orbit); }
+  if (icon) { icon.textContent = prism ? '⬢' : orbit ? '◎' : meteor ? '☄' : memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); icon.classList.toggle('meteor-receipt', meteor); icon.classList.toggle('orbit-receipt', orbit); icon.classList.toggle('prism-receipt', prism); }
   if (dialog.showModal) dialog.showModal();
 }
 async function copyTransactionReference() {
@@ -1220,6 +1386,26 @@ function downloadHistory() {
   URL.revokeObjectURL(link.href);
   showToast(`${history.length} ledger event${history.length === 1 ? '' : 's'} exported`);
 }
+function renderMissions(history = []) {
+  const totalCoins = history.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const uniqueModes = new Set(history.map((item) => item.game).filter(Boolean)).size;
+  const values = {
+    signal: { value: Math.min(1, history.length), goal: 1 },
+    modes: { value: Math.min(4, uniqueModes), goal: 4 },
+    coins: { value: Math.min(1000, totalCoins), goal: 1000 },
+    prism: { value: Math.min(1, history.filter((item) => item.game === 'prism_sort').length), goal: 1 },
+  };
+  let complete = 0;
+  Object.entries(values).forEach(([key, mission]) => {
+    const percent = Math.min(100, Math.round((mission.value / mission.goal) * 100));
+    if (percent >= 100) complete += 1;
+    setText(`#mission-${key}-value`, key === 'coins' ? coins(mission.value) : mission.value);
+    setText(`#mission-${key}-status`, `${percent}%`);
+    const bar = $(`#mission-${key}-bar`);
+    if (bar) bar.style.transform = `scaleX(${percent / 100})`;
+  });
+  setText('#mission-complete', `${complete}/4`);
+}
 function render(data) {
   setGuestMode(false);
   state.data = data;
@@ -1259,6 +1445,7 @@ function render(data) {
   renderStreak(streak);
   renderInsights(history, data.cooldowns || {});
   renderPulse(history, streak);
+  renderMissions(history);
   updateLiveTicker(history);
   startCooldownTicker();
 }
@@ -1271,6 +1458,8 @@ function renderPublic(data) {
   if (state.meteor.verifying) { state.meteor.verifying = false; meteorState('idle'); }
   if (state.orbit.active) finishOrbitGame(false, true);
   if (state.orbit.verifying) { state.orbit.verifying = false; orbitState('idle'); }
+  if (state.prism.active) finishPrismGame(false, true);
+  if (state.prism.verifying) { state.prism.verifying = false; prismState('idle'); }
   clearInterval(state.cooldownTimer);
   state.cooldownTimer = null;
   state.data = data;
@@ -1344,7 +1533,7 @@ function launchConfetti() {
 }
 function showReward(game, amount) {
   const dialog = $('#reward');
-  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : game === 'meteor_dodge' ? 'Storm cleared!' : game === 'orbit_lock' ? 'Orbit secured!' : 'Daily vault opened');
+  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : game === 'meteor_dodge' ? 'Storm cleared!' : game === 'orbit_lock' ? 'Orbit secured!' : game === 'prism_sort' ? 'Prism run cleared!' : 'Daily vault opened');
   setText('#reward-amount', `+${coins(amount)}`);
   launchConfetti();
   haptic('heavy');
@@ -1377,8 +1566,8 @@ async function play(game) {
 }
 
 function navigate(screen) {
-  let valid = ['home', 'arcade', 'progress'].includes(screen) ? screen : 'home';
-  if (state.guest && valid === 'arcade') valid = 'home';
+  let valid = ['home', 'arcade', 'missions', 'progress'].includes(screen) ? screen : 'home';
+  if (state.guest && ['arcade', 'missions'].includes(valid)) valid = 'home';
   state.screen = valid;
   history.replaceState(null, '', `#${valid}`);
   localStorage.setItem('summon-screen', valid);
@@ -1426,6 +1615,8 @@ $('#orbit-board')?.addEventListener('click', (event) => {
   if (event.target.closest('#orbit-lock')) return;
   lockOrbit();
 });
+$('#prism-start')?.addEventListener('click', startPrismGame);
+$$('[data-prism-color]').forEach((button) => button.addEventListener('click', choosePrism));
 let meteorTouchX = null;
 $('#meteor-arena')?.addEventListener('touchstart', (event) => {
   meteorTouchX = event.changedTouches?.[0]?.clientX ?? null;
@@ -1448,6 +1639,12 @@ document.addEventListener('keydown', (event) => {
   if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
   event.preventDefault();
   lockOrbit();
+});
+document.addEventListener('keydown', (event) => {
+  if (!state.prism.active || !['1', '2', '3'].includes(event.key)) return;
+  event.preventDefault();
+  const button = $(`[data-prism-color="${Number(event.key) - 1}"]`);
+  button?.click();
 });
 function refreshLedgerView() {
   renderTransactions('#recent', state.data?.history || [], 4);
@@ -1526,7 +1723,7 @@ window.addEventListener('keydown', (event) => {
     setTimeout(() => $('#transaction-search')?.focus(), 0);
     return;
   }
-  const shortcut = { h: 'home', a: 'arcade', p: 'progress', r: 'sync', t: 'theme', e: 'export' }[key];
+  const shortcut = { h: 'home', a: 'arcade', m: 'missions', p: 'progress', r: 'sync', t: 'theme', e: 'export' }[key];
   if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey && shortcut) {
     event.preventDefault();
     runPaletteAction(shortcut);
@@ -1551,6 +1748,7 @@ practiceState('idle');
 memoryState('idle');
 meteorState('idle');
 orbitState('idle');
-navigate(initData && ['home', 'arcade', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
+prismState('idle');
+navigate(initData && ['home', 'arcade', 'missions', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
 loadMotionLibraries().catch(() => {});
 load().catch(() => {});
