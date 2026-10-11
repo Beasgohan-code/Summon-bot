@@ -1,13 +1,13 @@
 import os
 import sys
 import logging
-from telegram import (
+from aiogram_runtime import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
 )
-from telegram.constants import ParseMode
-from telegram.ext import ContextTypes
+from aiogram_runtime import ParseMode
+from aiogram_runtime import ContextTypes
 
 from config import OWNER_ID, OWNER_PANEL_PASSWORD
 from database import (
@@ -17,7 +17,6 @@ from database import (
 
 logger = logging.getLogger(__name__)
 
-import sqlite3
 # ==========================================
 # 🔐 CONFIGURATION
 # ==========================================

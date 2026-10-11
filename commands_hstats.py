@@ -2,11 +2,10 @@ from storage import connect as db_connect
 # ~/summon-bot/commands_hstats.py
 # /hstats and /me — uses Telegram native <blockquote expandable> for collapse.
 
-import sqlite3
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
-from telegram.ext import ContextTypes, CommandHandler
+from aiogram_runtime import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram_runtime import ParseMode
+from aiogram_runtime import ContextTypes, CommandHandler
 from config import DB_NAME
 
 logger = logging.getLogger(__name__)
@@ -75,7 +74,6 @@ ACHIEVEMENTS = {
 
 def get_user_data(user_id):
     conn = db_connect(DB)
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     u = cur.execute(
         "SELECT * FROM users WHERE user_id = ?", (user_id,)
@@ -98,7 +96,8 @@ def get_user_data(user_id):
     rank = cur.execute("""
         SELECT COUNT(*) + 1 FROM (
             SELECT user_id, COUNT(DISTINCT character_id) as cnt
-            FROM user_collection GROUP BY user_id HAVING cnt > ?
+            FROM user_collection GROUP BY user_id
+            HAVING COUNT(DISTINCT character_id) > ?
         )
     """, (unique_chars,)).fetchone()[0] or 1
 
@@ -261,7 +260,7 @@ async def hstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==================== REFRESH CALLBACK ====================
-from telegram.ext import CallbackQueryHandler
+from aiogram_runtime import CallbackQueryHandler
 
 
 async def hstats_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
