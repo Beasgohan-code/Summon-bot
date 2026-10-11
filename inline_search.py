@@ -4,8 +4,8 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from telegram import InlineQueryResultArticle, InlineQueryResultPhoto, InputTextMessageContent, Update
-from telegram.ext import ContextTypes
+from aiogram_runtime import InlineQueryResultArticle, InlineQueryResultPhoto, InputTextMessageContent, Update
+from aiogram_runtime import ContextTypes
 
 from config import DB_NAME, RARITY_EMOJI
 from media_urls import is_allowed_character_image_url

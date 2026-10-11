@@ -2,13 +2,12 @@ from storage import connect as db_connect
 import time
 import random
 import re
-import sqlite3
 import logging
 import requests
 
-from telegram import Update
-from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters
-from telegram.constants import ChatAction, ParseMode
+from aiogram_runtime import Update
+from aiogram_runtime import ContextTypes, CommandHandler, MessageHandler, filters
+from aiogram_runtime import ChatAction, ParseMode
 
 from config import (
     DB_NAME, GUESS_TIMEOUT, REWARD_COINS, REACTIONS, BOT_TOKEN, DB_CHANNEL_ID,
@@ -25,9 +24,8 @@ streak_data: dict = {}       # chat_id -> {"current_streak": int, "last_correct_
 # ==================== HELPERS ====================
 
 def db_query(query: str, params: tuple = (), fetch: str = "all"):
-    """Simple sqlite3 query helper matching your bot's style."""
+    """Simple Mongo-backed query helper matching the bot's legacy style."""
     conn = db_connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     cur.execute(query, params)
     if fetch == "one":
@@ -61,8 +59,7 @@ def async_react(chat_id: int, message_id: int):
 
 async def react_to_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
     """Background task wrapper."""
-    await context.application.create_task  # noop, just to silence linters
-    # Run the sync request via the bot's event loop in a thread
+    # Run the sync request via the bot's event loop in a thread.
     import asyncio
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, async_react, chat_id, message_id)
@@ -73,9 +70,12 @@ def get_random_character():
         rows = db_query("SELECT id, name, anime, rarity, image_url FROM characters", fetch="all")
         if not rows:
             return None
-        return dict(random.choice(rows))
-    except Exception as e:
-        LOGGER.error(f"get_random_character error: {e}")
+        row = random.choice(rows)
+        if hasattr(row, "keys"):
+            return {key: row[key] for key in row.keys()}
+        return dict(row)
+    except Exception:
+        LOGGER.exception("get_random_character error")
         return None
 
 
@@ -195,7 +195,12 @@ async def nguess_dm_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle any text message in groups — check if it's a guess."""
-    LOGGER.warning(f"NGUESS_HANDLE_GUESS_FIRED: text='{update.effective_message.text if update.effective_message else None}' chat_id={update.effective_chat.id if update.effective_chat else None} sessions={list(ongoing_sessions.keys())}")
+    LOGGER.debug(
+        "NGUESS_HANDLE_GUESS_FIRED: text=%r chat_id=%s sessions=%s",
+        update.effective_message.text if update.effective_message else None,
+        update.effective_chat.id if update.effective_chat else None,
+        list(ongoing_sessions.keys()),
+    )
     if not update.effective_message or not update.effective_message.text:
         return
     chat = update.effective_chat

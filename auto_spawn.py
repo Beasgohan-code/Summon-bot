@@ -17,15 +17,14 @@ Self-contained. Delete this file → bot still works.
 """
 from storage import connect as db_connect
 
-import sqlite3
 import logging
-from telegram import (
+from aiogram_runtime import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
 )
-from telegram.constants import ParseMode
-from telegram.ext import ContextTypes
+from aiogram_runtime import ParseMode
+from aiogram_runtime import ContextTypes
 
 from config import DB_NAME, OWNER_ID
 
@@ -298,7 +297,7 @@ async def auto_spawn_watcher(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # REGISTRATION HELPER
 # ==========================
 def register(application):
-    from telegram.ext import MessageHandler, CallbackQueryHandler, filters
+    from aiogram_runtime import MessageHandler, CallbackQueryHandler, filters
 
     application.add_handler(CallbackQueryHandler(hint_callback, pattern=r"^hint_"))
     application.add_handler(

@@ -1,0 +1,12 @@
+{
+  "name": "Summon Protocol OS",
+  "short_name": "Summon OS",
+  "description": "Server-authoritative Telegram Mini App for Summon World",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3f6fb",
+  "theme_color": "#f3f6fb",
+  "categories": ["games", "entertainment", "social"]
+}
