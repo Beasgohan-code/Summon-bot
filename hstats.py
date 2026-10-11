@@ -1,5 +1,4 @@
-from storage import connect as db_connect
-import sqlite3
+from storage import connect as db_connect, premium_remaining_seconds
 from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
@@ -90,24 +89,11 @@ def get_conn():
 
 # ==================== DB HELPERS ====================
 def is_premium(user_id):
-    conn = get_conn()
-    row = conn.execute("""
-        SELECT 1 FROM premium
-        WHERE user_id=? AND expires_at > datetime('now')
-    """, (user_id,)).fetchone()
-    conn.close()
-    return bool(row)
+    return premium_remaining_seconds(user_id) > 0
 
 
 def premium_left(user_id):
-    conn = get_conn()
-    row = conn.execute("""
-        SELECT CAST((julianday(expires_at) - julianday('now')) * 24 AS INT)
-        FROM premium
-        WHERE user_id=? AND expires_at > datetime('now')
-    """, (user_id,)).fetchone()
-    conn.close()
-    return row[0] if row else 0
+    return premium_remaining_seconds(user_id) // 3600
 
 
 def cooldown_left(user_id, command):
@@ -213,7 +199,6 @@ async def hstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_id, target_first, target_username = row
 
     conn = get_conn()
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     # User
@@ -246,7 +231,8 @@ async def hstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rank_row = cur.execute("""
         SELECT COUNT(*) + 1 FROM (
             SELECT user_id, COUNT(DISTINCT character_id) as cnt
-            FROM user_collection GROUP BY user_id HAVING cnt > ?
+            FROM user_collection GROUP BY user_id
+            HAVING COUNT(DISTINCT character_id) > ?
         )
     """, (unique_chars,)).fetchone()
     rank = rank_row[0] if rank_row else 1
