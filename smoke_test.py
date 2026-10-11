@@ -108,7 +108,7 @@ for legacy_lab in ("memory-lab", "meteor-lab", "orbit-lab", "prism-lab", "signal
     assert legacy_lab not in html_source
 for retired_label in ("rune_memory", "meteor_dodge", "orbit_lock", "prism_sort", "signal_trace"):
     assert retired_label not in html_source and retired_label not in app_source
-assert "NO LOCAL GAMES" in html_source
+assert "SERVER-RUN ONLY" in html_source
 assert "Sign in through Telegram" in (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
 assert "grant_premium" in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
 assert "INSERT INTO premium" not in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
