@@ -13,7 +13,17 @@ from urllib.parse import parse_qs, unquote
 
 from config import BOT_TOKEN, TELEGRAM_GUEST_MODE
 from database import check_and_register_user, get_balance
-from storage import connect, claim_miniapp_reward, public_miniapp_snapshot
+from storage import (
+    connect,
+    claim_miniapp_reward,
+    public_miniapp_snapshot,
+    create_miniapp_room,
+    join_miniapp_room,
+    get_miniapp_room,
+    set_miniapp_room_ready,
+    submit_miniapp_room_score,
+    leave_miniapp_room,
+)
 
 logger = logging.getLogger(__name__)
 _ASSET_ROOT = Path(__file__).with_name("webapp")
@@ -92,7 +102,7 @@ def _dashboard(user_id: int) -> dict:
     connection = connect()
     try:
         user = connection.execute(
-            "SELECT user_id, username, first_name, balance, last_daily, last_spin, last_constellation, last_rune_memory, last_meteor_dodge, last_orbit_lock, last_prism_sort FROM users WHERE user_id = ?",
+            "SELECT user_id, username, first_name, balance, last_daily, last_spin, last_constellation, last_rune_memory, last_meteor_dodge, last_orbit_lock, last_prism_sort, last_signal_trace, last_duo_relay FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         collection = connection.execute(
@@ -145,6 +155,8 @@ def _dashboard(user_id: int) -> dict:
                 "meteor_dodge": _cooldown(user[8] if user else None),
                 "orbit_lock": _cooldown(user[9] if user else None),
                 "prism_sort": _cooldown(user[10] if user else None),
+                "signal_trace": _cooldown(user[11] if user else None),
+                "duo_relay": _cooldown(user[12] if user else None),
             },
             "history": [
                 {"id": str(row[0]), "game": row[1], "amount": int(row[2]), "created_at": str(row[3])}
@@ -205,9 +217,9 @@ def _game(headers: dict[str, str], body: bytes):
             return _json(400, {"ok": False, "error": "Invalid score"})
     except (TypeError, ValueError, json.JSONDecodeError):
         return _json(400, {"ok": False, "error": "Invalid JSON"})
-    if game not in {"daily", "spin", "constellation", "rune_memory", "meteor_dodge", "orbit_lock", "prism_sort"} or not event_id or len(event_id) > 128:
+    if game not in {"daily", "spin", "constellation", "rune_memory", "meteor_dodge", "orbit_lock", "prism_sort", "signal_trace"} or not event_id or len(event_id) > 128:
         return _json(400, {"ok": False, "error": "Invalid game request"})
-    if game in {"constellation", "rune_memory", "meteor_dodge", "orbit_lock", "prism_sort"} and not 0 <= score <= 100_000:
+    if game in {"constellation", "rune_memory", "meteor_dodge", "orbit_lock", "prism_sort", "signal_trace"} and not 0 <= score <= 100_000:
         return _json(400, {"ok": False, "error": "Invalid game score"})
 
     if game == "daily":
@@ -233,6 +245,9 @@ def _game(headers: dict[str, str], body: bytes):
     elif game == "prism_sort":
         # Prism Sort sends only a bounded result; the server chooses the payout.
         amount = secrets.randbelow(321) + 160
+    elif game == "signal_trace":
+        # Signal Trace sends only a bounded result; the server chooses the payout.
+        amount = secrets.randbelow(341) + 180
     else:
         return _json(400, {"ok": False, "error": "Unsupported game"})
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -249,6 +264,38 @@ def _game(headers: dict[str, str], body: bytes):
     except Exception:
         logger.exception("Mini App reward failed for user %s", user.get("id"))
         return _json(500, {"ok": False, "error": "Reward could not be recorded."})
+
+
+
+def _arena(headers: dict[str, str], body: bytes):
+    """Authenticated two-player room API using Mongo-backed polling state."""
+    user = _authenticated(headers)
+    check_and_register_user(user["id"], user.get("username"), user.get("first_name"))
+    try:
+        payload = json.loads(body or b"{}")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid arena request.") from exc
+    action = str(payload.get("action", "")).lower().strip()
+    user_name = str(user.get("first_name") or user.get("username") or "Summoner")[:42]
+    if action == "create":
+        room = create_miniapp_room(user["id"], user_name)
+    elif action == "join":
+        room = join_miniapp_room(str(payload.get("code", "")), user["id"], user_name)
+    elif action == "get":
+        room = get_miniapp_room(str(payload.get("code", "")), user["id"])
+    elif action == "ready":
+        room = set_miniapp_room_ready(str(payload.get("code", "")), user["id"], bool(payload.get("ready", True)))
+    elif action == "submit":
+        try:
+            score = int(payload.get("score", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid arena score.") from exc
+        room = submit_miniapp_room_score(str(payload.get("code", "")), user["id"], score)
+    elif action == "leave":
+        room = leave_miniapp_room(str(payload.get("code", "")), user["id"])
+    else:
+        raise ValueError("Unsupported arena action.")
+    return _json(200, {"ok": True, "room": room})
 
 
 def _asset(path: str):
@@ -282,6 +329,12 @@ def handle_request(method: str, path: str, query: str, headers: dict[str, str], 
             return _leaderboard(headers, query)
         except ValueError as exc:
             return _json(401, {"ok": False, "error": str(exc)})
+    if path == "/api/miniapp/arena" and method == "POST":
+        try:
+            return _arena(headers, body)
+        except ValueError as exc:
+            status = 401 if "Telegram WebApp" in str(exc) or "init data" in str(exc) else 400
+            return _json(status, {"ok": False, "error": str(exc)})
     if path == "/api/miniapp/game" and method == "POST":
         try:
             return _game(headers, body)

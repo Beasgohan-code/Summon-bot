@@ -21,6 +21,11 @@ and a same-origin Telegram Mini App.
   leaderboard only. Balances, private collections, account identity, reward
   history, and all game/reward endpoints remain behind Telegram WebApp
   init-data validation. Set it to `false` to disable the public preview.
+- The Mini App includes Home, Arcade, Missions, Signal Room, Progress, and a
+  private Duo Arena. Duo Relay rooms are short-lived MongoDB-backed two-player
+  matches with invite codes, ready states, deterministic shared circuits,
+  polling-based live status, server-settled outcomes, idempotent ledger
+  receipts, and per-player cooldown protection.
 
 Use MongoDB Atlas or another durable replica-set deployment with backups and
 point-in-time recovery enabled. “Lossless” operation still requires the

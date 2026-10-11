@@ -14,6 +14,7 @@ import contextvars
 import datetime as _dt
 import random
 import re
+import secrets
 import threading
 from collections.abc import Iterator
 from typing import Any
@@ -81,7 +82,7 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
 _SCHEMA_COLUMNS: dict[str, list[str]] = {
     "users": [
         "user_id", "username", "balance", "banned", "favorite", "last_daily",
-        "last_hclaim", "last_spin", "last_constellation", "last_rune_memory", "last_meteor_dodge", "last_orbit_lock", "last_prism_sort", "font_pref", "first_name", "last_hclaim_count",
+        "last_hclaim", "last_spin", "last_constellation", "last_rune_memory", "last_meteor_dodge", "last_orbit_lock", "last_prism_sort", "last_signal_trace", "last_duo_relay", "font_pref", "first_name", "last_hclaim_count",
     ],
     "characters": ["id", "name", "anime", "rarity", "image_url", "created_at"],
     "user_collection": ["id", "user_id", "character_id", "count", "obtained_at"],
@@ -576,6 +577,7 @@ def initialize_database() -> None:
         "characters": [([("id", ASCENDING)], {"unique": True})],
         "user_collection": [([("user_id", ASCENDING), ("character_id", ASCENDING)], {"unique": True})],
         "miniapp_rewards": [([("event_id", ASCENDING)], {"unique": True}), ([("user_id", ASCENDING), ("created_at", DESCENDING)], {})],
+        "miniapp_rooms": [([("expires_at", ASCENDING)], {}), ([("players.user_id", ASCENDING)], {})],
         "auctions": [([("id", ASCENDING)], {"unique": True}), ([("status", ASCENDING), ("end_time", ASCENDING)], {})],
         "auction_bids": [([("auction_id", ASCENDING), ("bidder_id", ASCENDING), ("amount", ASCENDING)], {})],
         "sudo_users": [([("user_id", ASCENDING)], {"unique": True})],
@@ -754,6 +756,234 @@ def claim_miniapp_reward(event_id: str, user_id: int, game: str, amount: int, ti
         ledger.delete_one({"_id": event_id})
         raise
     return True
+
+
+# ---------- Mongo-native Mini App multiplayer rooms ----------
+def _room_now() -> float:
+    return _dt.datetime.now(_dt.timezone.utc).timestamp()
+
+
+def _room_player_name(user_id: int, fallback: str = "Summoner") -> str:
+    document = _get_client()[MONGO_DB_NAME]["users"].find_one(
+        {"user_id": int(user_id)}, {"first_name": 1, "username": 1, "_id": 0},
+    )
+    if document:
+        return str(document.get("first_name") or document.get("username") or fallback)[:42]
+    return fallback[:42]
+
+
+def _ensure_room_player_available(user_id: int) -> None:
+    database = _get_client()[MONGO_DB_NAME]
+    now = _room_now()
+    active = database["miniapp_rooms"].find_one({
+        "expires_at": {"$gt": now},
+        "status": {"$in": ["lobby", "ready", "running"]},
+        "players.user_id": int(user_id),
+    })
+    if active:
+        raise ValueError("You already have an active Duo Relay room.")
+    user = database["users"].find_one({"user_id": int(user_id)}, {"last_duo_relay": 1, "_id": 0})
+    previous = _parse_datetime(user.get("last_duo_relay")) if user else None
+    cutoff = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) - _dt.timedelta(hours=24)
+    if previous and previous > cutoff:
+        remaining = max(1, int((previous + _dt.timedelta(hours=24) - _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)).total_seconds() / 60))
+        raise ValueError(f"Duo Relay is on cooldown for another {remaining} minutes.")
+
+
+def _room_payload(room: dict[str, Any], user_id: int) -> dict[str, Any]:
+    if not room:
+        raise ValueError("Room not found.")
+    now = _room_now()
+    complete = room.get("status") == "complete"
+    rewards = room.get("rewards") or {}
+    winner_id = room.get("winner_id")
+    players = []
+    for player in room.get("players", []):
+        player_id = int(player.get("user_id"))
+        is_you = player_id == int(user_id)
+        item = {
+            "name": str(player.get("name") or "Summoner"),
+            "ready": bool(player.get("ready")),
+            "submitted": bool(player.get("submitted")),
+            "is_you": is_you,
+            "score": int(player.get("score") or 0) if complete or is_you and player.get("submitted") else None,
+        }
+        if complete and str(player_id) in rewards:
+            reward = rewards[str(player_id)]
+            item["reward"] = int(reward.get("amount") or 0)
+            item["credited"] = bool(reward.get("credited"))
+        players.append(item)
+    current_reward = rewards.get(str(int(user_id))) if complete else None
+    return {
+        "code": str(room.get("code") or room.get("_id") or ""),
+        "game": "duo_relay",
+        "seed": int(room.get("challenge_seed") or 0),
+        "status": str(room.get("status") or "lobby"),
+        "players": players,
+        "max_players": 2,
+        "expires_in": max(0, int(room.get("expires_at", now) - now)),
+        "winner": "tie" if complete and room.get("winner_id") is None else "you" if complete and int(winner_id or 0) == int(user_id) else "opponent" if complete else None,
+        "winner_name": room.get("winner_name"),
+        "result": room.get("result"),
+        "reward": int(current_reward.get("amount") or 0) if current_reward else 0,
+        "credited": bool(current_reward.get("credited")) if current_reward else False,
+        "settled": bool(room.get("settled")),
+    }
+
+
+def create_miniapp_room(user_id: int, name: str = "Summoner") -> dict[str, Any]:
+    """Create a short-lived two-player room for the authenticated Mini App."""
+    _ensure_room_player_available(user_id)
+    database = _get_client()[MONGO_DB_NAME]
+    now = _room_now()
+    player_name = str(name or _room_player_name(user_id))[:42]
+    for _ in range(12):
+        code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+        room = {
+            "_id": code,
+            "code": code,
+            "game": "duo_relay",
+            "status": "lobby",
+            "created_at": _utc_now(),
+            "expires_at": now + 15 * 60,
+            "players": [{"user_id": int(user_id), "name": player_name, "ready": False, "submitted": False, "score": None}],
+        }
+        try:
+            database["miniapp_rooms"].insert_one(room)
+            return _room_payload(room, user_id)
+        except DuplicateKeyError:
+            continue
+    raise RuntimeError("Could not create a multiplayer room. Try again.")
+
+
+def join_miniapp_room(code: str, user_id: int, name: str = "Summoner") -> dict[str, Any]:
+    """Join an open room atomically; room codes never expose Telegram IDs."""
+    _ensure_room_player_available(user_id)
+    clean = "".join(str(code or "").upper().split())
+    if len(clean) != 6 or any(char not in "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" for char in clean):
+        raise ValueError("Enter a valid six-character room code.")
+    database = _get_client()[MONGO_DB_NAME]
+    player = {"user_id": int(user_id), "name": str(name or _room_player_name(user_id))[:42], "ready": False, "submitted": False, "score": None}
+    room = database["miniapp_rooms"].find_one_and_update(
+        {"_id": clean, "status": "lobby", "expires_at": {"$gt": _room_now()}, "players.1": {"$exists": False}, "players": {"$not": {"$elemMatch": {"user_id": int(user_id)}}}},
+        {"$push": {"players": player}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not room:
+        raise ValueError("That room is full, expired, or no longer waiting.")
+    return _room_payload(room, user_id)
+
+
+def set_miniapp_room_ready(code: str, user_id: int, ready: bool = True) -> dict[str, Any]:
+    clean = "".join(str(code or "").upper().split())
+    database = _get_client()[MONGO_DB_NAME]
+    room = database["miniapp_rooms"].find_one({"_id": clean, "expires_at": {"$gt": _room_now()}, "players.user_id": int(user_id)})
+    if not room or len(room.get("players", [])) != 2:
+        raise ValueError("Both players must join before the room can start.")
+    if room.get("status") not in {"lobby", "ready"}:
+        return _room_payload(room, user_id)
+    changed = database["miniapp_rooms"].update_one(
+        {"_id": clean, "status": {"$in": ["lobby", "ready"]}, "players": {"$elemMatch": {"user_id": int(user_id)}}},
+        {"$set": {"players.$.ready": bool(ready)}},
+    )
+    if changed.matched_count != 1:
+        raise ValueError("Room is no longer accepting readiness changes.")
+    room = database["miniapp_rooms"].find_one({"_id": clean})
+    all_ready = len(room.get("players", [])) == 2 and all(bool(player.get("ready")) for player in room["players"])
+    ready_update = {"status": "ready" if all_ready else "lobby"}
+    if all_ready and not room.get("challenge_seed"):
+        ready_update["challenge_seed"] = secrets.randbelow(2_147_483_646) + 1
+    database["miniapp_rooms"].update_one({"_id": clean, "status": {"$in": ["lobby", "ready"]}}, {"$set": ready_update})
+    room = database["miniapp_rooms"].find_one({"_id": clean})
+    return _room_payload(room, user_id)
+
+
+def submit_miniapp_room_score(code: str, user_id: int, score: int) -> dict[str, Any]:
+    """Store one player's score and atomically close the race when both finish."""
+    if not 0 <= int(score) <= 100_000:
+        raise ValueError("Invalid multiplayer score.")
+    clean = "".join(str(code or "").upper().split())
+    database = _get_client()[MONGO_DB_NAME]
+    updated = database["miniapp_rooms"].update_one(
+        {"_id": clean, "status": {"$in": ["ready", "running"]}, "expires_at": {"$gt": _room_now()}, "players": {"$elemMatch": {"user_id": int(user_id), "ready": True, "submitted": False}}},
+        {"$set": {"players.$.score": int(score), "players.$.submitted": True, "status": "running"}},
+    )
+    if updated.matched_count != 1:
+        room = database["miniapp_rooms"].find_one({"_id": clean})
+        if room and any(int(player.get("user_id")) == int(user_id) and player.get("submitted") for player in room.get("players", [])):
+            return _room_payload(room, user_id)
+        raise ValueError("The room is not ready for this score.")
+    room = database["miniapp_rooms"].find_one({"_id": clean})
+    players = room.get("players", [])
+    if len(players) == 2 and all(bool(player.get("submitted")) for player in players):
+        first, second = players
+        first_score, second_score = int(first.get("score") or 0), int(second.get("score") or 0)
+        if first_score == second_score:
+            winner_id, winner_name, result = None, "Draw", "tie"
+            plan = {str(first["user_id"]): (secrets.randbelow(121) + 240), str(second["user_id"]): (secrets.randbelow(121) + 240)}
+        else:
+            winner = first if first_score > second_score else second
+            loser = second if winner is first else first
+            winner_id, winner_name, result = int(winner["user_id"]), str(winner.get("name") or "Winner"), "win"
+            plan = {str(winner["user_id"]): (secrets.randbelow(161) + 360), str(loser["user_id"]): (secrets.randbelow(101) + 140)}
+        database["miniapp_rooms"].find_one_and_update(
+            {"_id": clean, "status": "running", "players.0.submitted": True, "players.1.submitted": True},
+            {"$set": {"status": "complete", "winner_id": winner_id, "winner_name": winner_name, "result": result, "rewards_plan": plan, "completed_at": _utc_now()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        room = database["miniapp_rooms"].find_one({"_id": clean})
+    return settle_miniapp_room(clean, user_id)
+
+
+def settle_miniapp_room(code: str, user_id: int) -> dict[str, Any]:
+    """Credit both server-selected room rewards exactly once and return a safe room view."""
+    clean = "".join(str(code or "").upper().split())
+    database = _get_client()[MONGO_DB_NAME]
+    room = database["miniapp_rooms"].find_one({"_id": clean, "players.user_id": int(user_id)})
+    if not room:
+        raise ValueError("Room not found or you are not a player in it.")
+    if room.get("status") not in {"complete", "closed"} and room.get("expires_at", 0) <= _room_now():
+        database["miniapp_rooms"].update_one({"_id": clean, "status": {"$nin": ["complete", "closed"]}}, {"$set": {"status": "closed"}})
+        raise ValueError("This room has expired. Create a new relay room.")
+    if room.get("status") == "complete" and not room.get("settled"):
+        lock = database["miniapp_rooms"].find_one_and_update(
+            {"_id": clean, "status": "complete", "settled": {"$ne": True}, "$or": [{"settling_at": {"$exists": False}}, {"settling_at": {"$lt": _room_now() - 60}}]},
+            {"$set": {"settling_at": _room_now()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if lock and not lock.get("settled"):
+            timestamp = _utc_now()
+            cutoff = (_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) - _dt.timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+            rewards = {}
+            for player in lock.get("players", []):
+                player_id = int(player["user_id"])
+                planned = int((lock.get("rewards_plan") or {}).get(str(player_id), 0))
+                event_id = f"duo_relay:{clean}:{player_id}"
+                credited = claim_miniapp_reward(event_id, player_id, "duo_relay", planned, timestamp, cutoff) if planned > 0 else False
+                rewards[str(player_id)] = {"amount": planned if credited else 0, "credited": bool(credited)}
+            database["miniapp_rooms"].update_one({"_id": clean, "settled": {"$ne": True}}, {"$set": {"rewards": rewards, "settled": True}, "$unset": {"settling_at": ""}})
+        room = database["miniapp_rooms"].find_one({"_id": clean})
+    return _room_payload(room, user_id)
+
+
+def get_miniapp_room(code: str, user_id: int) -> dict[str, Any]:
+    return settle_miniapp_room(code, user_id)
+
+
+def leave_miniapp_room(code: str, user_id: int) -> dict[str, Any]:
+    clean = "".join(str(code or "").upper().split())
+    database = _get_client()[MONGO_DB_NAME]
+    room = database["miniapp_rooms"].find_one({"_id": clean, "players.user_id": int(user_id)})
+    if not room:
+        raise ValueError("Room not found.")
+    if room.get("status") in {"complete", "closed"}:
+        return _room_payload(room, user_id)
+    if room.get("players", [{}])[0].get("user_id") == int(user_id):
+        database["miniapp_rooms"].update_one({"_id": clean}, {"$set": {"status": "closed", "expires_at": 0}})
+    else:
+        database["miniapp_rooms"].update_one({"_id": clean}, {"$pull": {"players": {"user_id": int(user_id)}}, "$set": {"status": "lobby"}})
+    room = database["miniapp_rooms"].find_one({"_id": clean})
+    return _room_payload(room, user_id)
 
 
 # ---------- SQL-shaped compatibility helpers ----------

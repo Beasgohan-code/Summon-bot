@@ -81,6 +81,30 @@ const state = {
     timer: null,
     targetTimer: null,
   },
+  signal: {
+    active: false,
+    verifying: false,
+    timeLeft: 18,
+    score: 0,
+    combo: 0,
+    target: 'up',
+    locked: false,
+    best: Number(localStorage.getItem('summon-signal-best') || 0) || 0,
+    timer: null,
+    targetTimer: null,
+  },
+  arena: {
+    room: null,
+    pollTimer: null,
+    running: false,
+    submitted: false,
+    sequence: [],
+    step: 0,
+    score: 0,
+    combo: 0,
+    timeLeft: 18,
+    timer: null,
+  },
 };
 const initData = tg?.initData || '';
 const fmt = new Intl.NumberFormat();
@@ -143,6 +167,8 @@ function gameLabel(game) {
   if (game === 'meteor_dodge') return 'Meteor dodge';
   if (game === 'orbit_lock') return 'Orbit lock';
   if (game === 'prism_sort') return 'Prism sort';
+  if (game === 'signal_trace') return 'Signal trace';
+  if (game === 'duo_relay') return 'Duo relay';
   return 'Daily vault';
 }
 function formatDate(value) {
@@ -369,6 +395,18 @@ function renderPrismAvailability(cooldowns = state.data?.cooldowns || {}) {
     button.innerHTML = state.prism.score ? 'Run again <span>↗</span>' : 'Start prism sort <span>↗</span>';
   }
 }
+function renderSignalAvailability(cooldowns = state.data?.cooldowns || {}) {
+  const button = $('#signal-start');
+  const info = cooldowns.signal_trace || { available: true, remaining_seconds: 0 };
+  if (!button || state.signal.active || state.signal.verifying) return;
+  button.disabled = state.guest || !info.available;
+  if (!info.available) {
+    button.innerHTML = `Reward window in ${duration(info.remaining_seconds)} <span>◷</span>`;
+    setText('#signal-status', `Next verified reward in ${duration(info.remaining_seconds)}`);
+  } else {
+    button.innerHTML = state.signal.score ? 'Run again <span>↗</span>' : 'Start signal trace <span>↗</span>';
+  }
+}
 function renderGames(cooldowns = {}) {
   ['daily', 'spin'].forEach((game) => {
     const info = cooldowns[game] || { available: true, remaining_seconds: 0 };
@@ -387,6 +425,7 @@ function renderGames(cooldowns = {}) {
   renderMeteorAvailability(cooldowns);
   renderOrbitAvailability(cooldowns);
   renderPrismAvailability(cooldowns);
+  renderSignalAvailability(cooldowns);
 }
 function startCooldownTicker() {
   clearInterval(state.cooldownTimer);
@@ -403,6 +442,7 @@ function startCooldownTicker() {
       renderGames(state.data.cooldowns);
       renderInsights(state.data.history || [], state.data.cooldowns);
       renderPulse(state.data.history || [], state.data.streak || {});
+      renderIntel(state.data.history || [], state);
     }
   }, 1000);
 }
@@ -1097,6 +1137,450 @@ function startPrismGame() {
   haptic('light');
 }
 
+
+const signalDirections = [
+  { key: 'up', name: 'North', glyph: '↑', className: 'up' },
+  { key: 'right', name: 'East', glyph: '→', className: 'right' },
+  { key: 'down', name: 'South', glyph: '↓', className: 'down' },
+  { key: 'left', name: 'West', glyph: '←', className: 'left' },
+];
+function signalDirection(key) {
+  return signalDirections.find((direction) => direction.key === key) || signalDirections[0];
+}
+function signalState(status = state.signal.active ? 'active' : 'idle') {
+  const board = $('#signal-board');
+  const target = signalDirection(state.signal.target);
+  if (board) board.dataset.state = status;
+  setText('#signal-time', `${Math.max(0, state.signal.timeLeft)}s`);
+  setText('#signal-score', state.signal.score);
+  setText('#signal-combo', `${state.signal.combo}×`);
+  setText('#signal-target-label', status === 'active' || status === 'locked' ? `Trace ${target.name}` : status === 'complete' ? 'circuit cleared' : 'Ready when you are');
+  const glyph = $('#signal-target-glyph');
+  if (glyph) {
+    glyph.textContent = target.glyph;
+    glyph.className = `signal-target-glyph ${target.className}`;
+  }
+  setText('#signal-progress', status === 'active' || status === 'locked' ? `${state.signal.timeLeft}s remaining` : status === 'complete' ? 'current aligned' : '18 seconds');
+  const copy = {
+    active: 'Follow the pulse · arrows or W, A, S, D',
+    locked: 'Signal caught · next pulse incoming…',
+    complete: `Circuit complete · ${state.signal.score} points`,
+    idle: 'Ready when you are',
+  };
+  setText('#signal-status', copy[status] || copy.idle);
+  const start = $('#signal-start');
+  if (start) {
+    start.disabled = state.signal.verifying;
+    start.innerHTML = state.signal.verifying ? 'Verifying run…' : status === 'active' || status === 'locked' ? 'Abort run <span>×</span>' : status === 'complete' ? 'Run again <span>↗</span>' : 'Start signal trace <span>↗</span>';
+  }
+  $$('[data-signal-direction]').forEach((button) => {
+    button.disabled = status !== 'active' || state.signal.verifying;
+    button.classList.toggle('selected', button.dataset.signalDirection === state.signal.target && status === 'active');
+  });
+  if (!state.signal.active && !state.signal.verifying) renderSignalAvailability();
+}
+function signalClearTimers() {
+  clearInterval(state.signal.timer);
+  clearTimeout(state.signal.targetTimer);
+  state.signal.timer = null;
+  state.signal.targetTimer = null;
+  state.signal.locked = false;
+  $$('[data-signal-direction]').forEach((button) => button.classList.remove('correct', 'wrong', 'selected'));
+}
+function signalNextTarget() {
+  const current = signalDirections.findIndex((direction) => direction.key === state.signal.target);
+  let next = Math.floor(Math.random() * signalDirections.length);
+  if (signalDirections.length > 1 && next === current) next = (next + 1) % signalDirections.length;
+  state.signal.target = signalDirections[next].key;
+  signalState('active');
+}
+function chooseSignal(event) {
+  if (!state.signal.active || state.signal.locked) return;
+  const choice = event.currentTarget.dataset.signalDirection;
+  const button = event.currentTarget;
+  const correct = choice === state.signal.target;
+  state.signal.locked = true;
+  button.classList.add(correct ? 'correct' : 'wrong');
+  if (correct) {
+    state.signal.combo += 1;
+    state.signal.score += 18 + Math.min(54, (state.signal.combo - 1) * 6);
+    haptic(state.signal.combo % 4 === 0 ? 'medium' : 'light');
+    signalState('locked');
+  } else {
+    state.signal.combo = 0;
+    haptic('heavy');
+    setText('#signal-status', `Wrong direction · follow ${signalDirection(state.signal.target).name}`);
+  }
+  state.signal.targetTimer = setTimeout(() => {
+    button.classList.remove('correct', 'wrong');
+    state.signal.locked = false;
+    signalNextTarget();
+  }, correct ? 250 : 420);
+}
+function finishSignalGame(success = false, aborted = false) {
+  if (!state.signal.active && !state.signal.verifying) return;
+  signalClearTimers();
+  state.signal.active = false;
+  if (state.signal.score > state.signal.best) {
+    state.signal.best = state.signal.score;
+    localStorage.setItem('summon-signal-best', String(state.signal.best));
+  }
+  if (aborted) {
+    state.signal.timeLeft = 18;
+    state.signal.score = 0;
+    state.signal.combo = 0;
+    signalState('idle');
+    return;
+  }
+  if (!success) return;
+  const finalScore = state.signal.score;
+  state.signal.verifying = true;
+  state.signal.timeLeft = 0;
+  signalState('complete');
+  haptic('heavy');
+  setText('#signal-status', 'Verifying your signal run…');
+  api('/api/miniapp/game', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ game: 'signal_trace', score: finalScore, event_id: eventId() }),
+  }).then(async (result) => {
+    showReward('signal_trace', result.winnings);
+    await load({ quiet: true });
+  }).catch(async (error) => {
+    showToast(error.message || 'Run complete, but the reward could not be recorded.', true);
+    setText('#signal-status', 'Run complete · reward verification unavailable');
+    if (error.status === 409) await load({ quiet: true }).catch(() => {});
+  }).finally(() => {
+    state.signal.verifying = false;
+    signalState('complete');
+    renderSignalAvailability();
+  });
+}
+function startSignalGame() {
+  if (state.guest) { showToast('Open the Mini App in Telegram to enter Signal Trace.', true); return; }
+  if (state.signal.verifying) return;
+  if (!state.signal.active && state.data?.cooldowns?.signal_trace && !state.data.cooldowns.signal_trace.available) {
+    showToast(`The next signal reward is available in ${duration(state.data.cooldowns.signal_trace.remaining_seconds)}.`, true);
+    return;
+  }
+  if (state.signal.active) { finishSignalGame(false, true); return; }
+  signalClearTimers();
+  state.signal.active = true;
+  state.signal.timeLeft = 18;
+  state.signal.score = 0;
+  state.signal.combo = 0;
+  state.signal.target = signalDirections[Math.floor(Math.random() * signalDirections.length)].key;
+  signalState('active');
+  state.signal.timer = setInterval(() => {
+    state.signal.timeLeft -= 1;
+    if (state.signal.timeLeft <= 0) {
+      state.signal.timeLeft = 0;
+      finishSignalGame(true);
+    } else signalState('active');
+  }, 1000);
+  $('#signal-board')?.focus({ preventScroll: true });
+  haptic('light');
+}
+
+
+function arenaFormatTime(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, '0')}`;
+}
+async function arenaApi(action, payload = {}) {
+  const result = await api('/api/miniapp/arena', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  return result.room;
+}
+function arenaMe(room = state.arena.room) {
+  return room?.players?.find((player) => player.is_you) || null;
+}
+function arenaOpponent(room = state.arena.room) {
+  return room?.players?.find((player) => !player.is_you) || null;
+}
+function arenaClearTimer() {
+  clearInterval(state.arena.timer);
+  state.arena.timer = null;
+}
+function arenaStopPolling() {
+  clearInterval(state.arena.pollTimer);
+  state.arena.pollTimer = null;
+}
+function arenaResetLocal() {
+  arenaClearTimer();
+  arenaStopPolling();
+  state.arena.room = null;
+  state.arena.running = false;
+  state.arena.submitted = false;
+  state.arena.sequence = [];
+  state.arena.step = 0;
+  state.arena.score = 0;
+  state.arena.combo = 0;
+  state.arena.timeLeft = 18;
+  const lobby = $('#arena-lobby');
+  const room = $('#arena-room');
+  if (lobby) lobby.hidden = state.guest;
+  if (room) room.hidden = true;
+  arenaState('idle');
+}
+function arenaRenderPlayers(room) {
+  const node = $('#arena-players');
+  if (!node) return;
+  node.replaceChildren();
+  const players = room?.players || [];
+  [players[0], players[1]].forEach((player, index) => {
+    const card = document.createElement('article');
+    card.className = `arena-player ${player?.is_you ? 'you' : ''} ${player ? '' : 'empty'}`;
+    const badge = document.createElement('span');
+    badge.className = 'arena-player-badge';
+    badge.textContent = player ? (player.is_you ? 'YOU' : 'RIVAL') : `SLOT 0${index + 1}`;
+    const avatar = document.createElement('span');
+    avatar.className = 'arena-player-avatar';
+    avatar.textContent = player ? initials(player.name) : '+';
+    const copy = document.createElement('span');
+    copy.className = 'arena-player-copy';
+    const name = document.createElement('b');
+    name.textContent = player ? player.name : 'Open slot';
+    const status = document.createElement('small');
+    status.textContent = player ? (room.status === 'complete' ? `${player.score ?? 0} points` : player.ready ? 'Ready signal locked' : 'Choosing a loadout') : 'Share the code to invite';
+    copy.append(name, status);
+    const stateMark = document.createElement('span');
+    stateMark.className = `arena-player-state ${player?.ready ? 'ready' : ''}`;
+    stateMark.textContent = player?.ready ? '✓' : player ? '…' : '·';
+    card.append(badge, avatar, copy, stateMark);
+    node.append(card);
+  });
+}
+function arenaRenderResult(room) {
+  const result = $('#arena-result');
+  if (!result) return;
+  const complete = room?.status === 'complete';
+  result.hidden = !complete;
+  if (!complete) return;
+  const medal = $('#arena-result-medal');
+  const title = $('#arena-result-title');
+  const copy = $('#arena-result-copy');
+  const reward = $('#arena-result-reward');
+  const outcome = room.winner;
+  if (medal) medal.textContent = outcome === 'you' ? '✦' : outcome === 'tie' ? '◇' : '⚔';
+  setText('#arena-result-title', outcome === 'you' ? 'You won the relay' : outcome === 'tie' ? 'A perfectly matched draw' : 'Relay complete');
+  setText('#arena-result-copy', outcome === 'you' ? `${room.winner_name || 'Your run'} took the lead. Server-selected coins are now in your ledger.` : outcome === 'tie' ? 'Both signals landed together. Your tie reward was selected by the server.' : `${room.winner_name || 'Your rival'} took the lead. Your participation reward is still secured.`);
+  setText('#arena-result-reward', `+${coins(room.reward)} COINS`);
+  if (reward) reward.className = `arena-result-reward ${outcome === 'you' ? 'winner' : ''}`;
+}
+function arenaRender(room) {
+  if (!room) return;
+  state.arena.room = room;
+  const lobby = $('#arena-lobby');
+  const roomPanel = $('#arena-room');
+  if (lobby) lobby.hidden = true;
+  if (roomPanel) roomPanel.hidden = false;
+  setText('#arena-room-code', room.code);
+  setText('#arena-room-expiry', arenaFormatTime(room.expires_in));
+  arenaRenderPlayers(room);
+  const me = arenaMe(room);
+  const opponent = arenaOpponent(room);
+  const bothReady = Boolean(me?.ready && opponent?.ready);
+  const waiting = $('#arena-waiting');
+  const readyActions = $('#arena-ready-actions');
+  const readyButton = $('#arena-ready');
+  const startCard = $('#arena-start-card');
+  const startButton = $('#arena-start-run');
+  const duel = $('#arena-duel');
+  if (room.status === 'complete') {
+    setText('#arena-room-status', 'Match settled · ledger updated');
+  } else if (!opponent) {
+    setText('#arena-room-status', 'Waiting for a second player…');
+  } else if (!bothReady) {
+    setText('#arena-room-status', 'Both players must lock their ready signal.');
+  } else if (room.status === 'running') {
+    setText('#arena-room-status', 'Relay in progress · scores are sealed on submit');
+  } else {
+    setText('#arena-room-status', 'Both signals locked · start your relay');
+  }
+  if (waiting) {
+    waiting.hidden = room.status === 'complete' || state.arena.running;
+    setText('#arena-waiting-title', !opponent ? 'Waiting for your teammate' : !me?.ready ? 'Lock your ready signal' : !opponent?.ready ? 'Waiting for your rival to ready up' : me?.submitted ? 'Score sealed · waiting for rival' : 'Room is live');
+    setText('#arena-waiting-copy', !opponent ? 'Share the room code to bring another player into the relay.' : !bothReady ? 'Both players need to be ready before the circuit unlocks.' : me?.submitted ? 'Your score is safely stored. The result will settle when the other player finishes.' : 'Start when you are ready. Your rival can run at the same time.');
+  }
+  if (readyActions) readyActions.hidden = room.status === 'complete' || state.arena.running || Boolean(me?.submitted);
+  if (readyButton) {
+    readyButton.disabled = !opponent || room.status === 'complete' || bothReady || state.arena.running || Boolean(me?.submitted);
+    readyButton.innerHTML = me?.ready ? 'Ready signal locked <span>✓</span>' : 'Mark ready <span>✓</span>';
+  }
+  if (startCard) {
+    const canStart = !me?.submitted && !state.arena.running && (bothReady || room.status === 'running');
+    startCard.hidden = !canStart || room.status === 'complete';
+    if (startButton) startButton.innerHTML = room.status === 'running' ? 'Join relay <span>↗</span>' : 'Start relay <span>↗</span>';
+  }
+  if (duel) duel.hidden = !state.arena.running || room.status === 'complete';
+  arenaRenderResult(room);
+  if (room.status === 'complete') arenaStopPolling();
+}
+async function arenaRefresh(quiet = true) {
+  if (!state.arena.room?.code || state.guest) return;
+  try {
+    const room = await arenaApi('get', { code: state.arena.room.code });
+    arenaRender(room);
+  } catch (error) {
+    if (!quiet) showToast(error.message || 'Could not refresh the room.', true);
+    if (error.status === 404 || error.status === 400) arenaResetLocal();
+  }
+}
+function arenaStartPolling() {
+  arenaStopPolling();
+  state.arena.pollTimer = setInterval(() => arenaRefresh(true), 1500);
+}
+function arenaSeededSequence(seed, length = 12) {
+  let value = (Number(seed) || 1) >>> 0;
+  const directions = ['up', 'right', 'down', 'left'];
+  return Array.from({ length }, () => {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    return directions[value % directions.length];
+  });
+}
+function arenaState(status = state.arena.running ? 'active' : 'idle') {
+  const board = $('#arena-duel');
+  const target = state.arena.sequence[state.arena.step] || 'up';
+  if (board) board.dataset.state = status;
+  setText('#arena-duel-glyph', signalDirection(target).glyph);
+  setText('#arena-duel-step', `${String(Math.min(state.arena.step + 1, state.arena.sequence.length || 12)).padStart(2, '0')} / ${state.arena.sequence.length || 12}`);
+  setText('#arena-duel-score', state.arena.score);
+  setText('#arena-duel-time', `${Math.max(0, state.arena.timeLeft)}s`);
+  setText('#arena-duel-progress', status === 'active' ? `${state.arena.timeLeft}s remaining` : status === 'complete' ? 'score submitted' : '12 pulses');
+  setText('#arena-duel-status', status === 'active' ? `Trace pulse ${state.arena.step + 1}` : status === 'complete' ? 'Score sealed · waiting for rival' : 'Ready when you are');
+  $$('[data-arena-direction]').forEach((button) => {
+    button.disabled = status !== 'active';
+    button.classList.toggle('selected', button.dataset.arenaDirection === target && status === 'active');
+  });
+}
+function arenaFinishRun() {
+  if (!state.arena.running || state.arena.submitted) return;
+  arenaClearTimer();
+  state.arena.running = false;
+  state.arena.submitted = true;
+  arenaState('complete');
+  const room = state.arena.room;
+  if (!room?.code) return;
+  arenaApi('submit', { code: room.code, score: state.arena.score }).then((nextRoom) => {
+    arenaRender(nextRoom);
+    showToast('Your score is sealed in the private relay.');
+  }).catch((error) => {
+    state.arena.submitted = false;
+    showToast(error.message || 'The relay score could not be submitted.', true);
+    arenaState('idle');
+  });
+}
+function arenaChoose(event) {
+  if (!state.arena.running) return;
+  const choice = event.currentTarget.dataset.arenaDirection;
+  const target = state.arena.sequence[state.arena.step];
+  if (choice === target) {
+    state.arena.combo += 1;
+    state.arena.score += 30 + Math.min(70, state.arena.combo * 8);
+    state.arena.step += 1;
+    haptic(state.arena.combo % 4 === 0 ? 'medium' : 'light');
+    if (state.arena.step >= state.arena.sequence.length) {
+      arenaFinishRun();
+      return;
+    }
+  } else {
+    state.arena.combo = 0;
+    state.arena.score = Math.max(0, state.arena.score - 10);
+    haptic('heavy');
+    setText('#arena-duel-status', `Signal mismatch · pulse ${state.arena.step + 1} remains`);
+  }
+  arenaState('active');
+}
+function arenaStartRun() {
+  const room = state.arena.room;
+  const me = arenaMe(room);
+  const opponent = arenaOpponent(room);
+  if (!room || !me?.ready || !opponent?.ready || me.submitted || state.arena.running) return;
+  state.arena.sequence = arenaSeededSequence(room.seed, 12);
+  state.arena.step = 0;
+  state.arena.score = 0;
+  state.arena.combo = 0;
+  state.arena.timeLeft = 18;
+  state.arena.submitted = false;
+  state.arena.running = true;
+  arenaState('active');
+  const startCard = $('#arena-start-card');
+  if (startCard) startCard.hidden = true;
+  state.arena.timer = setInterval(() => {
+    state.arena.timeLeft -= 1;
+    if (state.arena.timeLeft <= 0) {
+      state.arena.timeLeft = 0;
+      arenaFinishRun();
+    } else arenaState('active');
+  }, 1000);
+  $('#arena-duel')?.focus({ preventScroll: true });
+  haptic('light');
+}
+async function createArenaRoom() {
+  if (state.guest) { showToast('Open the Mini App in Telegram to enter Duo Arena.', true); return; }
+  const button = $('#arena-create');
+  if (button) { button.disabled = true; button.innerHTML = 'Creating room…'; }
+  try {
+    const room = await arenaApi('create');
+    arenaRender(room);
+    arenaStartPolling();
+    showToast(`Room ${room.code} created · invite a player.`);
+  } catch (error) {
+    showToast(error.message || 'Could not create a room.', true);
+  } finally { if (button) { button.disabled = false; button.innerHTML = 'Create room <span>↗</span>'; } }
+}
+async function joinArenaRoom(event) {
+  event.preventDefault();
+  if (state.guest) { showToast('Open the Mini App in Telegram to enter Duo Arena.', true); return; }
+  const input = $('#arena-code');
+  const code = String(input?.value || '').trim().toUpperCase();
+  if (!code) return;
+  const submit = event.currentTarget.querySelector('button[type="submit"]');
+  if (submit) { submit.disabled = true; submit.innerHTML = 'Joining…'; }
+  try {
+    const room = await arenaApi('join', { code });
+    arenaRender(room);
+    arenaStartPolling();
+    showToast(`Joined room ${room.code}. Lock your ready signal.`);
+    if (input) input.value = '';
+  } catch (error) {
+    showToast(error.message || 'Could not join that room.', true);
+  } finally { if (submit) { submit.disabled = false; submit.innerHTML = 'Join <span>→</span>'; } }
+}
+async function toggleArenaReady() {
+  const room = state.arena.room;
+  const me = arenaMe(room);
+  if (!room || !me || !arenaOpponent(room)) return;
+  try {
+    const nextRoom = await arenaApi('ready', { code: room.code, ready: !me.ready });
+    arenaRender(nextRoom);
+  } catch (error) {
+    showToast(error.message || 'Could not update readiness.', true);
+  }
+}
+async function leaveArenaRoom() {
+  const room = state.arena.room;
+  if (room?.code) {
+    try { await arenaApi('leave', { code: room.code }); } catch (_) {}
+  }
+  arenaResetLocal();
+  showToast('You left the Duo Arena room.');
+}
+async function copyArenaCode() {
+  const code = state.arena.room?.code;
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast('Room code copied');
+  } catch (_) {
+    showToast(`Share code ${code} with your teammate.`);
+  }
+}
+
 function transactionItem(item) {
   const row = document.createElement('article');
   row.className = 'transaction-item transaction-clickable';
@@ -1106,9 +1590,9 @@ function transactionItem(item) {
   row.dataset.eventId = item.id || '';
   row.style.setProperty('--item-delay', `${Math.min(5, Math.random() * 5) * 45}ms`);
   const icon = document.createElement('span');
-  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : item.game === 'meteor_dodge' ? 'meteor' : item.game === 'orbit_lock' ? 'orbit' : item.game === 'prism_sort' ? 'prism' : 'daily';
+  const iconMode = item.game === 'spin' ? 'spin' : item.game === 'constellation' ? 'constellation' : item.game === 'rune_memory' ? 'memory' : item.game === 'meteor_dodge' ? 'meteor' : item.game === 'orbit_lock' ? 'orbit' : item.game === 'prism_sort' ? 'prism' : item.game === 'signal_trace' ? 'signal' : item.game === 'duo_relay' ? 'duo' : 'daily';
   icon.className = `transaction-icon ${iconMode}`;
-  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : item.game === 'meteor_dodge' ? '☄' : item.game === 'orbit_lock' ? '◎' : item.game === 'prism_sort' ? '⬢' : '☀';
+  icon.textContent = item.game === 'spin' ? '✹' : item.game === 'constellation' ? '✦' : item.game === 'rune_memory' ? '◈' : item.game === 'meteor_dodge' ? '☄' : item.game === 'orbit_lock' ? '◎' : item.game === 'prism_sort' ? '⬢' : item.game === 'signal_trace' ? '↯' : item.game === 'duo_relay' ? '⚔' : '☀';
   const copy = document.createElement('span');
   copy.className = 'transaction-copy';
   const title = document.createElement('b');
@@ -1237,12 +1721,14 @@ function renderInsights(history = [], cooldowns = {}) {
   const meteor = history.filter((item) => item.game === 'meteor_dodge').length;
   const orbit = history.filter((item) => item.game === 'orbit_lock').length;
   const prism = history.filter((item) => item.game === 'prism_sort').length;
-  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory], ['Meteor dodge', meteor], ['Orbit lock', orbit], ['Prism sort', prism]].sort((a, b) => b[1] - a[1]);
+  const signal = history.filter((item) => item.game === 'signal_trace').length;
+  const duo = history.filter((item) => item.game === 'duo_relay').length;
+  const modes = [['Daily vault', daily], ['Cosmic spin', spin], ['Constellation hunt', constellation], ['Rune recall', memory], ['Meteor dodge', meteor], ['Orbit lock', orbit], ['Prism sort', prism], ['Signal trace', signal], ['Duo relay', duo]].sort((a, b) => b[1] - a[1]);
   const favourite = history.length && modes[0][1] > 0 ? modes[0][0] : '—';
   setText('#earned-total', coins(todayTotal));
   setText('#average-reward', coins(average));
   setText('#favorite-mode', favourite);
-  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory, meteor, orbit, prism)} verified claims` : 'waiting for activity');
+  setText('#favorite-detail', history.length ? `${Math.max(daily, spin, constellation, memory, meteor, orbit, prism, signal, duo)} verified claims` : 'waiting for activity');
   const available = Object.entries(cooldowns).filter(([, value]) => value?.available);
   const next = available.length ? null : Object.entries(cooldowns).sort((a, b) => (a[1]?.remaining_seconds || 0) - (b[1]?.remaining_seconds || 0))[0];
   if (!next) {
@@ -1323,8 +1809,10 @@ function openTransactionDetail(item) {
   const meteor = item.game === 'meteor_dodge';
   const orbit = item.game === 'orbit_lock';
   const prism = item.game === 'prism_sort';
+  const signal = item.game === 'signal_trace';
+  const duo = item.game === 'duo_relay';
   setText('#transaction-detail-title', `${gameLabel(item.game)} receipt`);
-  setText('#transaction-detail-copy', prism ? 'Your color-sorting run was verified and written to the secure ledger.' : orbit ? 'Your orbit timing run was verified and written to the secure ledger.' : meteor ? 'Your survival run was verified and written to the secure ledger.' : memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
+  setText('#transaction-detail-copy', duo ? 'Your two-player relay was settled by the server and written to the secure ledger.' : signal ? 'Your directional reaction run was verified and written to the secure ledger.' : prism ? 'Your color-sorting run was verified and written to the secure ledger.' : orbit ? 'Your orbit timing run was verified and written to the secure ledger.' : meteor ? 'Your survival run was verified and written to the secure ledger.' : memory ? 'Your rune sequence was verified and written to the secure ledger.' : constellation ? 'Your constellation run was verified and written to the secure ledger.' : spin ? 'Your cosmic result was signed and written to the secure ledger.' : 'Your daily vault result was signed and written to the secure ledger.');
   setText('#transaction-detail-amount', `+${coins(item.amount)} COINS`);
   setText('#transaction-detail-type', gameLabel(item.game));
   setText('#transaction-detail-time', formatDate(item.created_at));
@@ -1332,7 +1820,7 @@ function openTransactionDetail(item) {
   const copyButton = $('#copy-transaction-ref');
   if (copyButton) copyButton.disabled = !item.id;
   const icon = $('#transaction-detail-icon');
-  if (icon) { icon.textContent = prism ? '⬢' : orbit ? '◎' : meteor ? '☄' : memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); icon.classList.toggle('meteor-receipt', meteor); icon.classList.toggle('orbit-receipt', orbit); icon.classList.toggle('prism-receipt', prism); }
+  if (icon) { icon.textContent = duo ? '⚔' : signal ? '↯' : prism ? '⬢' : orbit ? '◎' : meteor ? '☄' : memory ? '◈' : constellation ? '✦' : spin ? '✹' : '☀'; icon.classList.toggle('spin-receipt', spin); icon.classList.toggle('constellation-receipt', constellation); icon.classList.toggle('memory-receipt', memory); icon.classList.toggle('meteor-receipt', meteor); icon.classList.toggle('orbit-receipt', orbit); icon.classList.toggle('prism-receipt', prism); icon.classList.toggle('signal-receipt', signal); icon.classList.toggle('duo-receipt', duo); }
   if (dialog.showModal) dialog.showModal();
 }
 async function copyTransactionReference() {
@@ -1394,6 +1882,8 @@ function renderMissions(history = []) {
     modes: { value: Math.min(4, uniqueModes), goal: 4 },
     coins: { value: Math.min(1000, totalCoins), goal: 1000 },
     prism: { value: Math.min(1, history.filter((item) => item.game === 'prism_sort').length), goal: 1 },
+    'signal-trace': { value: Math.min(1, history.filter((item) => item.game === 'signal_trace').length), goal: 1 },
+    'duo-relay': { value: Math.min(1, history.filter((item) => item.game === 'duo_relay').length), goal: 1 },
   };
   let complete = 0;
   Object.entries(values).forEach(([key, mission]) => {
@@ -1404,7 +1894,74 @@ function renderMissions(history = []) {
     const bar = $(`#mission-${key}-bar`);
     if (bar) bar.style.transform = `scaleX(${percent / 100})`;
   });
-  setText('#mission-complete', `${complete}/4`);
+  setText('#mission-complete', `${complete}/6`);
+}
+function renderIntel(history = [], source = state) {
+  const data = source?.data || {};
+  const cooldowns = data.cooldowns || {};
+  const total = history.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const counts = new Map();
+  history.forEach((item) => counts.set(item.game, (counts.get(item.game) || 0) + 1));
+  const modes = [
+    ['daily', 'Daily vault', '☀', 'daily'],
+    ['spin', 'Cosmic spin', '✹', 'spin'],
+    ['constellation', 'Constellation hunt', '✦', 'constellation'],
+    ['rune_memory', 'Rune recall', '◈', 'memory'],
+    ['meteor_dodge', 'Meteor dodge', '☄', 'meteor'],
+    ['orbit_lock', 'Orbit lock', '◎', 'orbit'],
+    ['prism_sort', 'Prism sort', '⬢', 'prism'],
+    ['signal_trace', 'Signal trace', '↯', 'signal'],
+    ['duo_relay', 'Duo relay', '⚔', 'duo'],
+  ];
+  const ranked = modes.map(([game, label, icon, style]) => ({ game, label, icon, style, count: counts.get(game) || 0 }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  const list = $('#intel-mode-list');
+  if (list) {
+    list.replaceChildren();
+    const max = Math.max(...ranked.map((item) => item.count), 1);
+    if (!history.length) {
+      const empty = document.createElement('div');
+      empty.className = 'intel-empty';
+      empty.innerHTML = '<span>⌁</span><b>No signal yet</b><small>Your first verified run will appear here.</small>';
+      list.append(empty);
+    } else {
+      ranked.filter((item) => item.count > 0).forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'intel-mode-row';
+        const icon = document.createElement('span');
+        icon.className = `intel-mode-icon ${item.style}`;
+        icon.textContent = item.icon;
+        const copy = document.createElement('span');
+        copy.className = 'intel-mode-copy';
+        const name = document.createElement('b');
+        name.textContent = item.label;
+        const track = document.createElement('i');
+        const fill = document.createElement('em');
+        fill.style.width = `${Math.max(10, (item.count / max) * 100)}%`;
+        track.append(fill);
+        copy.append(name, track);
+        const count = document.createElement('strong');
+        count.textContent = `${item.count}×`;
+        row.append(icon, copy, count);
+        list.append(row);
+      });
+    }
+  }
+  setText('#intel-events', history.length);
+  setText('#intel-total-coins', coins(total));
+  setText('#intel-mode-count', new Set(history.map((item) => item.game).filter(Boolean)).size);
+  setText('#intel-streak', data.streak?.current || 0);
+  const ready = Object.values(cooldowns).filter((item) => item?.available).length;
+  const totalWindows = Math.max(9, Object.keys(cooldowns).length);
+  setText('#intel-ready-count', `${ready}/${totalWindows}`);
+  const readyBar = $('#intel-ready-bar');
+  if (readyBar) readyBar.style.width = `${Math.round((ready / totalWindows) * 100)}%`;
+  const nextReady = ranked.find((item) => !counts.get(item.game)) || ranked[0];
+  const nextLocked = Object.entries(cooldowns).filter(([, item]) => item && !item.available).sort((a, b) => (a[1].remaining_seconds || 0) - (b[1].remaining_seconds || 0))[0];
+  if (nextReady) {
+    setText('#intel-next-mode', nextReady.count ? `${nextReady.label} again` : nextReady.label);
+    setText('#intel-next-copy', nextLocked ? `${gameLabel(nextLocked[0])} unlocks in ${duration(nextLocked[1].remaining_seconds)}.` : 'A fresh route is ready to shape your next signal.');
+  }
 }
 function render(data) {
   setGuestMode(false);
@@ -1446,6 +2003,7 @@ function render(data) {
   renderInsights(history, data.cooldowns || {});
   renderPulse(history, streak);
   renderMissions(history);
+  renderIntel(history, state);
   updateLiveTicker(history);
   startCooldownTicker();
 }
@@ -1460,6 +2018,9 @@ function renderPublic(data) {
   if (state.orbit.verifying) { state.orbit.verifying = false; orbitState('idle'); }
   if (state.prism.active) finishPrismGame(false, true);
   if (state.prism.verifying) { state.prism.verifying = false; prismState('idle'); }
+  if (state.signal.active) finishSignalGame(false, true);
+  if (state.signal.verifying) { state.signal.verifying = false; signalState('idle'); }
+  arenaResetLocal();
   clearInterval(state.cooldownTimer);
   state.cooldownTimer = null;
   state.data = data;
@@ -1533,7 +2094,7 @@ function launchConfetti() {
 }
 function showReward(game, amount) {
   const dialog = $('#reward');
-  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : game === 'meteor_dodge' ? 'Storm cleared!' : game === 'orbit_lock' ? 'Orbit secured!' : game === 'prism_sort' ? 'Prism run cleared!' : 'Daily vault opened');
+  setText('#reward-title', game === 'spin' ? 'Cosmic hit!' : game === 'constellation' ? 'Constellation secured!' : game === 'rune_memory' ? 'Rune vault opened!' : game === 'meteor_dodge' ? 'Storm cleared!' : game === 'orbit_lock' ? 'Orbit secured!' : game === 'prism_sort' ? 'Prism run cleared!' : game === 'signal_trace' ? 'Signal traced!' : 'Daily vault opened');
   setText('#reward-amount', `+${coins(amount)}`);
   launchConfetti();
   haptic('heavy');
@@ -1566,8 +2127,8 @@ async function play(game) {
 }
 
 function navigate(screen) {
-  let valid = ['home', 'arcade', 'missions', 'progress'].includes(screen) ? screen : 'home';
-  if (state.guest && ['arcade', 'missions'].includes(valid)) valid = 'home';
+  let valid = ['home', 'arcade', 'missions', 'arena', 'intel', 'progress'].includes(screen) ? screen : 'home';
+  if (state.guest && ['arcade', 'missions', 'arena', 'intel'].includes(valid)) valid = 'home';
   state.screen = valid;
   history.replaceState(null, '', `#${valid}`);
   localStorage.setItem('summon-screen', valid);
@@ -1617,6 +2178,15 @@ $('#orbit-board')?.addEventListener('click', (event) => {
 });
 $('#prism-start')?.addEventListener('click', startPrismGame);
 $$('[data-prism-color]').forEach((button) => button.addEventListener('click', choosePrism));
+$('#signal-start')?.addEventListener('click', startSignalGame);
+$$('[data-signal-direction]').forEach((button) => button.addEventListener('click', chooseSignal));
+$('#arena-create')?.addEventListener('click', createArenaRoom);
+$('#arena-join-form')?.addEventListener('submit', joinArenaRoom);
+$('#arena-ready')?.addEventListener('click', toggleArenaReady);
+$('#arena-start-run')?.addEventListener('click', arenaStartRun);
+$('#arena-leave')?.addEventListener('click', leaveArenaRoom);
+$('#arena-copy-code')?.addEventListener('click', copyArenaCode);
+$$('[data-arena-direction]').forEach((button) => button.addEventListener('click', arenaChoose));
 let meteorTouchX = null;
 $('#meteor-arena')?.addEventListener('touchstart', (event) => {
   meteorTouchX = event.changedTouches?.[0]?.clientX ?? null;
@@ -1644,6 +2214,24 @@ document.addEventListener('keydown', (event) => {
   if (!state.prism.active || !['1', '2', '3'].includes(event.key)) return;
   event.preventDefault();
   const button = $(`[data-prism-color="${Number(event.key) - 1}"]`);
+  button?.click();
+});
+document.addEventListener('keydown', (event) => {
+  if (!state.signal.active) return;
+  const keyMap = { ArrowUp: 'up', ArrowRight: 'right', ArrowDown: 'down', ArrowLeft: 'left', w: 'up', d: 'right', s: 'down', a: 'left' };
+  const direction = keyMap[event.key] || keyMap[event.key.toLowerCase()];
+  if (!direction) return;
+  event.preventDefault();
+  const button = $(`[data-signal-direction="${direction}"]`);
+  button?.click();
+});
+document.addEventListener('keydown', (event) => {
+  if (!state.arena.running) return;
+  const keyMap = { ArrowUp: 'up', ArrowRight: 'right', ArrowDown: 'down', ArrowLeft: 'left', w: 'up', d: 'right', s: 'down', a: 'left' };
+  const direction = keyMap[event.key] || keyMap[event.key.toLowerCase()];
+  if (!direction) return;
+  event.preventDefault();
+  const button = $(`[data-arena-direction="${direction}"]`);
   button?.click();
 });
 function refreshLedgerView() {
@@ -1723,7 +2311,7 @@ window.addEventListener('keydown', (event) => {
     setTimeout(() => $('#transaction-search')?.focus(), 0);
     return;
   }
-  const shortcut = { h: 'home', a: 'arcade', m: 'missions', p: 'progress', r: 'sync', t: 'theme', e: 'export' }[key];
+  const shortcut = { h: 'home', a: 'arcade', m: 'missions', d: 'arena', i: 'intel', p: 'progress', r: 'sync', t: 'theme', e: 'export' }[key];
   if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey && shortcut) {
     event.preventDefault();
     runPaletteAction(shortcut);
@@ -1749,6 +2337,8 @@ memoryState('idle');
 meteorState('idle');
 orbitState('idle');
 prismState('idle');
-navigate(initData && ['home', 'arcade', 'missions', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
+signalState('idle');
+arenaState('idle');
+navigate(initData && ['home', 'arcade', 'missions', 'arena', 'intel', 'progress'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home');
 loadMotionLibraries().catch(() => {});
 load().catch(() => {});

@@ -68,6 +68,7 @@ try:
     assert webapp.handle_request("GET", "/api/miniapp/me", "", {})[0] == 401
     assert webapp.handle_request("GET", "/api/miniapp/leaderboard", "", {})[0] == 401
     assert webapp.handle_request("POST", "/api/miniapp/game", "", {}, b"{} ")[0] == 401
+    assert webapp.handle_request("POST", "/api/miniapp/arena", "", {}, b"{}")[0] == 401
 finally:
     webapp.public_miniapp_snapshot = public_snapshot
     webapp.TELEGRAM_GUEST_MODE = public_guest_mode
@@ -77,7 +78,13 @@ assert "/api/miniapp/public" in app_source
 assert "animateNumber" in app_source
 assert "launchConfetti" in app_source
 assert "transactionFilter" in app_source
-assert "balance-sparkline" in (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
+assert "arenaApi" in app_source
+assert "startSignalGame" in app_source
+html_source = (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
+assert "balance-sparkline" in html_source
+assert "Duo Arena" in html_source
+assert "Signal Trace" in html_source
+assert "Signal Room" in html_source
 assert "Sign in through Telegram" in (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
 assert "grant_premium" in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
 assert "INSERT INTO premium" not in (ROOT / "plugins" / "market.py").read_text(encoding="utf-8")
